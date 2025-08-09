@@ -13,14 +13,16 @@ import hashlib
 load_dotenv()
 
 class RedditScraper:
-    def __init__(self, images_dir: str = "images"):
+    def __init__(self, base_dir: str = "extracts"):
         self.reddit = praw.Reddit(
             client_id=os.getenv("REDDIT_CLIENT_ID"),
             client_secret=os.getenv("REDDIT_SECRET"),
             user_agent="tim-filter/0.1 by timfarkas"
         )
         self.reddit.read_only = True
-        self.images_dir = Path(images_dir)
+        self.base_dir = Path(base_dir)
+        self.base_dir.mkdir(exist_ok=True)
+        self.images_dir = self.base_dir / "images"
         self.images_dir.mkdir(exist_ok=True)
     
     def download_image(self, url: str, post_id: str, img_index: int = 0) -> Optional[str]:
@@ -57,76 +59,75 @@ class RedditScraper:
         return images
     
     def process_comment(self, comment, depth: int = 0, max_depth: int = 1, 
-                       max_replies: int = 3) -> Dict[str, Any]:
+                       max_replies: int = 3, condensed: bool = True) -> Dict[str, Any]:
         """Recursively process comment and its replies"""
         
-        # extract any embedded images in comment
-        embedded_images = self.extract_comment_images(comment.body)
-        
-        comment_data = {
-            'id': comment.id,
-            'author': str(comment.author) if comment.author else '[deleted]',
-            'body': comment.body,
-            'score': comment.score,
-            'created_utc': comment.created_utc,
-            'created_human': datetime.fromtimestamp(comment.created_utc).isoformat(),
-            'depth': depth,
-            'permalink': f"https://reddit.com{comment.permalink}",
-            'embedded_images': embedded_images,
-            'replies': []
-        }
-        
-        # download embedded images
-        downloaded_images = []
-        for i, img_url in enumerate(embedded_images):
-            img_path = self.download_image(img_url, f"comment_{comment.id}", i)
-            if img_path:
-                downloaded_images.append(img_path)
-        comment_data['downloaded_images'] = downloaded_images
-        
-        # process replies recursively
+        # process replies first to check if we have any
+        replies = []
         if depth < max_depth and hasattr(comment, 'replies'):
             for reply in comment.replies[:max_replies]:
                 if isinstance(reply, praw.models.Comment):
-                    comment_data['replies'].append(
-                        self.process_comment(reply, depth + 1, max_depth, max_replies)
+                    replies.append(
+                        self.process_comment(reply, depth + 1, max_depth, max_replies, condensed)
                     )
+        
+        if condensed:
+            # minimal format
+            comment_data = {
+                'body': comment.body,
+                'score': comment.score,
+            }
+            # only add replies if non-empty
+            if replies:
+                comment_data['replies'] = replies
+        else:
+            # full format
+            embedded_images = self.extract_comment_images(comment.body)
+            
+            comment_data = {
+                'id': comment.id,
+                'author': str(comment.author) if comment.author else '[deleted]',
+                'body': comment.body,
+                'score': comment.score,
+                'created_utc': comment.created_utc,
+                'created_human': datetime.fromtimestamp(comment.created_utc).isoformat(),
+                'depth': depth,
+                'permalink': f"https://reddit.com{comment.permalink}",
+                'embedded_images': embedded_images,
+                'replies': replies
+            }
+            
+            # download embedded images
+            downloaded_images = []
+            for i, img_url in enumerate(embedded_images):
+                img_path = self.download_image(img_url, f"comment_{comment.id}", i)
+                if img_path:
+                    downloaded_images.append(img_path)
+            comment_data['downloaded_images'] = downloaded_images
         
         return comment_data
     
     def process_post(self, submission, max_comments: int = 5, 
-                    max_comment_depth: int = 1, max_replies: int = 3) -> Dict[str, Any]:
+                    max_comment_depth: int = 1, max_replies: int = 3, 
+                    condensed: bool = True) -> Dict[str, Any]:
         """Process a Reddit post and return structured data"""
         
-        post_data = {
-            'id': submission.id,
-            'title': submission.title,
-            'author': str(submission.author) if submission.author else '[deleted]',
-            'selftext': submission.selftext,
-            'url': submission.url,
-            'permalink': f"https://reddit.com{submission.permalink}",
-            'score': submission.score,
-            'upvote_ratio': submission.upvote_ratio,
-            'num_comments': submission.num_comments,
-            'created_utc': submission.created_utc,
-            'created_human': datetime.fromtimestamp(submission.created_utc).isoformat(),
-            'subreddit': submission.subreddit.display_name,
-            'is_video': submission.is_video,
-            'is_gallery': hasattr(submission, 'is_gallery') and submission.is_gallery,
-            'images': [],
-            'comments': []
-        }
+        # always process images since they're important
+        images = []
         
         # handle different post types
         if 'i.redd.it' in submission.url:
             # direct image
             img_path = self.download_image(submission.url, submission.id)
             if img_path:
-                post_data['images'].append({
-                    'url': submission.url,
-                    'local_path': img_path,
-                    'type': 'main'
-                })
+                if condensed:
+                    images.append(img_path)
+                else:
+                    images.append({
+                        'url': submission.url,
+                        'local_path': img_path,
+                        'type': 'main'
+                    })
         
         elif hasattr(submission, 'is_gallery') and submission.is_gallery:
             # gallery post
@@ -139,12 +140,48 @@ class RedditScraper:
                     
                     img_path = self.download_image(img_url, submission.id, j)
                     if img_path:
-                        post_data['images'].append({
-                            'url': img_url,
-                            'local_path': img_path,
-                            'type': 'gallery',
-                            'index': j
-                        })
+                        if condensed:
+                            images.append(img_path)
+                        else:
+                            images.append({
+                                'url': img_url,
+                                'local_path': img_path,
+                                'type': 'gallery',
+                                'index': j
+                            })
+        
+        if condensed:
+            # minimal format
+            post_data = {
+                'title': submission.title,
+                'score': submission.score,
+                'subreddit': submission.subreddit.display_name,
+                'selftext': submission.selftext if submission.selftext else None,
+                'images': images if images else None,
+                'comments': []
+            }
+            # remove None values
+            post_data = {k: v for k, v in post_data.items() if v is not None}
+        else:
+            # full format
+            post_data = {
+                'id': submission.id,
+                'title': submission.title,
+                'author': str(submission.author) if submission.author else '[deleted]',
+                'selftext': submission.selftext,
+                'url': submission.url,
+                'permalink': f"https://reddit.com{submission.permalink}",
+                'score': submission.score,
+                'upvote_ratio': submission.upvote_ratio,
+                'num_comments': submission.num_comments,
+                'created_utc': submission.created_utc,
+                'created_human': datetime.fromtimestamp(submission.created_utc).isoformat(),
+                'subreddit': submission.subreddit.display_name,
+                'is_video': submission.is_video,
+                'is_gallery': hasattr(submission, 'is_gallery') and submission.is_gallery,
+                'images': images,
+                'comments': []
+            }
         
         # process comments
         submission.comments.replace_more(limit=0)
@@ -152,13 +189,13 @@ class RedditScraper:
             if isinstance(comment, praw.models.Comment):
                 post_data['comments'].append(
                     self.process_comment(comment, depth=0, max_depth=max_comment_depth, 
-                                       max_replies=max_replies)
+                                       max_replies=max_replies, condensed=condensed)
                 )
         
         return post_data
     
     def scrape_subreddit(self, subreddit_name: str, limit: int = 10, 
-                        sort: str = 'hot') -> List[Dict[str, Any]]:
+                        sort: str = 'hot', condensed: bool = True) -> List[Dict[str, Any]]:
         """Scrape posts from a subreddit"""
         
         subreddit = self.reddit.subreddit(subreddit_name)
@@ -183,7 +220,7 @@ class RedditScraper:
                 break
             
             print(f"Processing: {submission.title[:60]}...")
-            post_data = self.process_post(submission)
+            post_data = self.process_post(submission, condensed=condensed)
             results.append(post_data)
         
         return results
@@ -194,11 +231,12 @@ class RedditScraper:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"reddit_data_{timestamp}.json"
         
-        with open(filename, 'w', encoding='utf-8') as f:
+        filepath = self.base_dir / filename
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
-        print(f"Data saved to {filename}")
-        return filename
+        print(f"Data saved to {filepath}")
+        return str(filepath)
 
 
 if __name__ == "__main__":
@@ -214,8 +252,8 @@ if __name__ == "__main__":
     # print summary
     print(f"\nScraped {len(posts)} posts")
     total_comments = sum(len(p['comments']) for p in posts)
-    total_images = sum(len(p['images']) for p in posts)
-    total_replies = sum(sum(len(c['replies']) for c in p['comments']) for p in posts)
+    total_images = sum(len(p.get('images', [])) for p in posts)
+    total_replies = sum(sum(len(c.get('replies', [])) for c in p['comments']) for p in posts)
     print(f"Total top-level comments: {total_comments}")
     print(f"Total replies: {total_replies}")
     print(f"Total images downloaded: {total_images}")
@@ -227,4 +265,4 @@ if __name__ == "__main__":
         print(f"- Score: {posts[0]['score']}")
         print(f"- Comments: {len(posts[0]['comments'])}")
         if posts[0]['comments']:
-            print(f"- First comment has {len(posts[0]['comments'][0]['replies'])} replies")
+            print(f"- First comment has {len(posts[0]['comments'][0].get('replies', []))} replies")

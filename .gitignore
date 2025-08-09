@@ -12,6 +12,7 @@ data/
 *.csv
 output/
 images/
+extracts/
 
 # Secrets
 .env
