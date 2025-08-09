@@ -15,7 +15,10 @@ output/
 # Secrets
 .env
 .env.local
+.env.*
 config/secrets.yaml
+*.key
+*.pem
 
 # IDE
 .vscode/
