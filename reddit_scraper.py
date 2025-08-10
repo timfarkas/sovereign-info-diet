@@ -195,25 +195,36 @@ class RedditScraper:
         return post_data
     
     def scrape_subreddit(self, subreddit_name: str, limit: int = 10, 
-                        sort: str = 'hot', condensed: bool = True) -> List[Dict[str, Any]]:
-        """Scrape posts from a subreddit"""
+                        sort: str = 'hot', condensed: bool = True,
+                        time_horizon_days: int = None) -> List[Dict[str, Any]]:
+        """Scrape posts from a subreddit, optionally filtering by time"""
         
         subreddit = self.reddit.subreddit(subreddit_name)
         
         # get posts based on sort method
         if sort == 'hot':
-            posts = subreddit.hot(limit=limit + 1)  # +1 for potential sticky
+            posts = subreddit.hot(limit=limit * 3)  # fetch extra to filter
         elif sort == 'new':
-            posts = subreddit.new(limit=limit)
+            posts = subreddit.new(limit=limit * 3)
         elif sort == 'top':
-            posts = subreddit.top(limit=limit, time_filter='day')
+            posts = subreddit.top(limit=limit * 3, time_filter='week')
         else:
-            posts = subreddit.hot(limit=limit + 1)
+            posts = subreddit.new(limit=limit * 3)
+        
+        # filter by time if specified
+        if time_horizon_days:
+            from datetime import datetime, timedelta, timezone
+            cutoff_time = datetime.now(timezone.utc) - timedelta(days=time_horizon_days)
+            cutoff_timestamp = cutoff_time.timestamp()
         
         results = []
-        for i, submission in enumerate(posts):
+        for submission in posts:
             # skip stickied posts
-            if i == 0 and submission.stickied:
+            if submission.stickied:
+                continue
+            
+            # filter by time if specified
+            if time_horizon_days and submission.created_utc < cutoff_timestamp:
                 continue
             
             if len(results) >= limit:
@@ -223,6 +234,7 @@ class RedditScraper:
             post_data = self.process_post(submission, condensed=condensed)
             results.append(post_data)
         
+        print(f"Found {len(results)} posts within time horizon")
         return results
     
     def save_to_json(self, data: List[Dict], filename: str = None):
@@ -240,29 +252,40 @@ class RedditScraper:
 
 
 if __name__ == "__main__":
+    from config import POSTS_TO_ANALYZE, SUBREDDITS, SORT_BY, TIME_HORIZON_DAYS
+    
     scraper = RedditScraper()
     
-    # scrape r/singularity with configured limits
-    # 10 posts, top 5 comments each, 1 level deep with 3 replies max
-    posts = scraper.scrape_subreddit("singularity", limit=10, sort='hot')
+    all_posts = []
+    posts_per_sub = POSTS_TO_ANALYZE // len(SUBREDDITS)  # divide quota among subreddits
+    
+    # scrape each subreddit
+    for subreddit in SUBREDDITS:
+        print(f"\n📊 Scraping r/{subreddit}...")
+        posts = scraper.scrape_subreddit(
+            subreddit, 
+            limit=posts_per_sub, 
+            sort=SORT_BY, 
+            condensed=True,
+            time_horizon_days=TIME_HORIZON_DAYS
+        )
+        all_posts.extend(posts)
     
     # save to json
-    output_file = scraper.save_to_json(posts)
+    output_file = scraper.save_to_json(all_posts)
     
     # print summary
-    print(f"\nScraped {len(posts)} posts")
-    total_comments = sum(len(p['comments']) for p in posts)
-    total_images = sum(len(p.get('images', [])) for p in posts)
-    total_replies = sum(sum(len(c.get('replies', [])) for c in p['comments']) for p in posts)
+    print(f"\nTotal scraped: {len(all_posts)} posts across {len(SUBREDDITS)} subreddits")
+    total_comments = sum(len(p['comments']) for p in all_posts)
+    total_images = sum(len(p.get('images', [])) for p in all_posts)
+    total_replies = sum(sum(len(c.get('replies', [])) for c in p['comments']) for p in all_posts)
     print(f"Total top-level comments: {total_comments}")
     print(f"Total replies: {total_replies}")
     print(f"Total images downloaded: {total_images}")
     
-    # show sample of structure
-    if posts:
-        print(f"\nSample post structure:")
-        print(f"- Title: {posts[0]['title'][:60]}...")
-        print(f"- Score: {posts[0]['score']}")
-        print(f"- Comments: {len(posts[0]['comments'])}")
-        if posts[0]['comments']:
-            print(f"- First comment has {len(posts[0]['comments'][0].get('replies', []))} replies")
+    # show breakdown by subreddit
+    from collections import Counter
+    sub_counts = Counter(p['subreddit'] for p in all_posts)
+    print(f"\nPosts by subreddit:")
+    for sub, count in sub_counts.items():
+        print(f"  r/{sub}: {count}")
