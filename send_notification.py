@@ -16,10 +16,15 @@ def send_email(subject: str, body: str, to_email: str = None):
     to_email = to_email or os.getenv("EMAIL_TO")
     from_email = os.getenv("EMAIL_FROM", "AI Digest <noreply@kyro.local>")
     
+    # debug print what was parsed
+    print(f"📧 Debug - FROM: {repr(from_email)}")
+    print(f"📧 Debug - TO: {repr(to_email)}")
+    
     if not to_email:
         raise ValueError("Missing email config. Set EMAIL_TO in .env")
     
     # send using mail command with from address
+    print(f"📧 Debug - Mail command: ['mail', '-s', '{subject}', '-a', 'From: {from_email}', '{to_email}']")
     try:
         process = subprocess.Popen(
             ['mail', '-s', subject, '-a', f'From: {from_email}', to_email],
