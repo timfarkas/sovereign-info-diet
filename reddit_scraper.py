@@ -157,6 +157,9 @@ class RedditScraper:
                 'score': submission.score,
                 'subreddit': submission.subreddit.display_name,
                 'selftext': submission.selftext if submission.selftext else None,
+                # external destination of a link post -- without this a link post
+                # contributes only its title, and the article it points at is lost
+                'url': None if submission.is_self else submission.url,
                 'images': images if images else None,
                 'comments': []
             }
