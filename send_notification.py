@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-import markdown
 
 load_dotenv()
 
@@ -24,18 +23,15 @@ def send_email(subject: str, body: str, to_email: str = None):
     if not to_email:
         raise ValueError("Missing email config. Set EMAIL_TO in .env")
     
-    # convert markdown to html
-    html_body = markdown.markdown(body, extensions=['extra', 'nl2br'])
-    
-    # wrap in basic html template with styling
+    # body is already HTML (produced by the summarizer's prompt)
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
-        h1, h2, h3 {{ color: #2c3e50; margin-top: 20px; }}
-        h2 {{ border-bottom: 2px solid #3498db; padding-bottom: 5px; }}
+        h1, h2, h3, h4 {{ color: #2c3e50; margin-top: 20px; }}
+        h3 {{ border-bottom: 2px solid #3498db; padding-bottom: 5px; }}
         ul, ol {{ padding-left: 30px; }}
         li {{ margin: 8px 0; }}
         a {{ color: #3498db; text-decoration: none; }}
@@ -45,7 +41,7 @@ def send_email(subject: str, body: str, to_email: str = None):
     </style>
 </head>
 <body>
-{html_body}
+{body}
 </body>
 </html>"""
     
@@ -82,7 +78,7 @@ def send_summary_email():
     
     # find latest summary
     summaries_dir = Path("extracts/summaries")
-    summary_files = list(summaries_dir.glob("summary_*.md"))
+    summary_files = list(summaries_dir.glob("summary_*.html"))
     
     if not summary_files:
         print("No summaries found")

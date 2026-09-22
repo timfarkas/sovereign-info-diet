@@ -93,25 +93,20 @@ class LLMSummarizer:
         
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d")
-            filename = f"summary_{timestamp}.md"
-        
+            filename = f"summary_{timestamp}.html"
+
         output_dir = Path("extracts/summaries")
         output_dir.mkdir(exist_ok=True, parents=True)
-        
+
         filepath = output_dir / filename
-        
+
         # add header
-        full_content = f"""# AI Digest - {datetime.now().strftime("%Y-%m-%d")}
-
-*Analyzed {posts_analyzed} posts from the past {TIME_HORIZON_DAYS} days*
-
----
-
+        full_content = f"""<h1>AI Digest - {datetime.now().strftime("%Y-%m-%d")}</h1>
+<p><em>Analyzed {posts_analyzed} posts from the past {TIME_HORIZON_DAYS} days</em></p>
+<hr>
 {summary}
-
----
-
-*Generated at {datetime.now().strftime("%I:%M %p")}*
+<hr>
+<p><em>Generated at {datetime.now().strftime("%I:%M %p")}</em></p>
 """
         
         with open(filepath, 'w', encoding='utf-8') as f:
