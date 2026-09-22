@@ -11,8 +11,10 @@ ASSUMPTIONS, stated so they fail loudly:
   2. Fetched pages are UNTRUSTED TEXT. Anything they say is a claim by that
      page, never an instruction to the model. The prompt labels them as such;
      this module strips scripts and returns text only.
-  3. A page we cannot read is a page we skip, with the reason recorded. It is
-     never a reason to fail the digest.
+  3. A page we cannot read is still worth LINKING. We skip reading it, record
+     why, and hand it to the summarizer as a link the human should open --
+     arguably the highest-value link in the digest, since it is the one whose
+     content the pipeline could not extract for him. Never a reason to fail.
   4. Pages are cached on disk by URL, so regenerating a digest costs no refetch
      and we do not hammer anyone's server across runs.
 """
@@ -100,15 +102,21 @@ class LinkFetcher:
         keeps the budget spent on the links the digest is most likely to cite.
         """
         scored: Dict[str, int] = {}
+        seen_lower: Dict[str, str] = {}   # collapse case-variant duplicates
+
+        def note(url: str, weight: int):
+            canon = seen_lower.setdefault(url.lower(), url)
+            scored[canon] = max(scored.get(canon, 0), weight)
+
         for t in tweets or []:
             weight = (t.get("likes") or 0) + (t.get("retweets") or 0)
             for u in t.get("external_links") or []:
                 if not is_blocked_link(u) and not has_no_text_value(u):
-                    scored[u] = max(scored.get(u, 0), weight)
+                    note(u, weight)
         for p in posts or []:
             u = p.get("url")
             if u and not is_blocked_link(u) and not has_no_text_value(u):
-                scored[u] = max(scored.get(u, 0), p.get("score") or 0)
+                note(u, p.get("score") or 0)
         return [u for u, _ in sorted(scored.items(), key=lambda kv: -kv[1])][:limit]
 
     # --- fetching -------------------------------------------------------
@@ -179,17 +187,62 @@ class LinkFetcher:
         for p in pages:
             if p["status"] != "ok":
                 print(f"  [links] {p['status']} -- {p['url'][:90]}")
-        return usable
+        # every record, readable or not -- an unreadable page is still a link
+        return pages
+
+
+def link_label(url: str, title: str = "") -> str:
+    """A human-readable label for a page we may never have read.
+
+    Walled pages have no title, so the URL is all we have -- but a raw URL
+    truncated mid-querystring is unreadable. Use domain + the last path slug.
+    """
+    if title:
+        return title[:90]
+    bare = url.split("//", 1)[-1].split("?")[0].split("#")[0]
+    host, _, path = bare.partition("/")
+    host = host[4:] if host.lower().startswith("www.") else host
+    # last meaningful path segment, skipping generic ones ("/fulltext", "/index")
+    generic = {"fulltext", "index", "abstract", "abs", "view", "home", "en", "html",
+               "article", "full", "content", "default"}
+    segs = [seg for seg in path.rstrip("/").split("/") if seg]
+    slug = next((seg for seg in reversed(segs) if seg.lower() not in generic),
+                segs[-1] if segs else "")
+    slug = slug.rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip()
+    return f"{host} — {slug[:70]}" if slug else host
+
+
+def readable(pages: List[Dict]) -> List[Dict]:
+    return [p for p in pages or [] if p.get("status") == "ok"]
+
+
+def unreadable(pages: List[Dict]) -> List[Dict]:
+    return [p for p in pages or [] if p.get("status") != "ok"]
 
 
 def format_pages(pages: List[Dict]) -> str:
-    """Render fetched pages for the prompt, clearly fenced as untrusted data."""
+    """Render fetched pages for the prompt, clearly fenced as untrusted data.
+
+    Unreadable pages are listed too, with the reason. They are still links worth
+    putting in the digest -- a human with a browser and a subscription gets past
+    walls the pipeline cannot.
+    """
     if not pages:
-        return "(no linked pages could be fetched for this digest)"
+        return "(no linked pages were available for this digest)"
     out = ""
-    for i, p in enumerate(pages, 1):
-        out += (f"\n--- PAGE {i} ---\nurl: {p['url']}\ntitle: {p['title']}\n"
+    for i, p in enumerate(readable(pages), 1):
+        out += (f"\n--- PAGE {i} (read) ---\nurl: {p['url']}\ntitle: {p['title']}\n"
                 f"extract:\n{p['text']}\n")
+    blocked = unreadable(pages)
+    if blocked:
+        out += ("\n--- PAGES I COULD NOT READ (still link them) ---\n"
+                "A paywall or bot-wall stopped the fetch. The reader CAN usually open "
+                "these, so they are worth linking -- often more worth it than a page I "
+                "summarised for him. Link them by name, say what the linking post claims "
+                "about them, and make clear you are relaying that claim rather than "
+                "confirming it from the page itself.\n")
+        for p in blocked:
+            out += f"url: {p['url']}  [{p['status']}]\n"
     return out
 
 
