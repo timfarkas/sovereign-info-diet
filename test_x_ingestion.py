@@ -332,3 +332,49 @@ class _NoNewScraper(XScraper):
 
     def scrape(self, *a, **k):
         return []
+
+
+# --- digest cost guard ------------------------------------------------------
+
+class _Usage:
+    def __init__(self, inp, out, cached=0, reasoning=0):
+        self.prompt_tokens = inp
+        self.completion_tokens = out
+        self.prompt_tokens_details = type("d", (), {"cached_tokens": cached})
+        self.completion_tokens_details = type("d", (), {"reasoning_tokens": reasoning})
+
+
+def test_cost_is_computed_from_the_pricing_table():
+    from llm_summarizer import report_cost
+    # gpt-6-sol: $2.00/1M in, $10.00/1M out
+    assert report_cost("gpt-6-sol", _Usage(1_000_000, 100_000)) == pytest.approx(3.0)
+
+
+def test_cached_input_is_billed_at_the_cached_rate():
+    from llm_summarizer import report_cost
+    # 1M input of which all cached: $0.20 rather than $2.00
+    assert report_cost("gpt-6-sol", _Usage(1_000_000, 0, cached=1_000_000)) \
+        == pytest.approx(0.2)
+
+
+def test_over_ceiling_is_flagged_loudly(capsys):
+    from llm_summarizer import report_cost
+    report_cost("gpt-6-astra", _Usage(1_000_000, 100_000))   # $15, way over
+    assert "OVER the $0.20/digest ceiling" in capsys.readouterr().out
+
+
+def test_configured_model_has_a_price_and_fits_the_ceiling_at_realistic_size():
+    """If someone bumps SUMMARY_MODEL to something pricier, this should catch it
+    before the invoice does. Sized on the measured 2026-09-22 run."""
+    from config import MODEL_PRICING, SUMMARY_MODEL, SUMMARY_COST_CEILING_USD
+    assert SUMMARY_MODEL in MODEL_PRICING, f"no price known for {SUMMARY_MODEL}"
+    p_in, _, p_out = MODEL_PRICING[SUMMARY_MODEL]
+    est = (60_000 * p_in + 4_000 * p_out) / 1e6
+    assert est <= SUMMARY_COST_CEILING_USD, f"{SUMMARY_MODEL} ~${est:.3f}/digest"
+
+
+def test_unknown_model_does_not_crash_the_digest(capsys):
+    from llm_summarizer import report_cost
+    import math
+    assert math.isnan(report_cost("gpt-9-whatever", _Usage(10, 10)))
+    assert "no entry in config.MODEL_PRICING" in capsys.readouterr().out
