@@ -74,15 +74,46 @@ def health_banner(path: str = "extracts/x_health.json") -> str:
             + f". Checked {h.get('checked_at')}.{tail}</p>")
 
 
+def report_cost(model: str, usage) -> float:
+    """Print what this call cost and flag it if it blew the ceiling.
+
+    Tim set the budget per digest, so the digest should say what it cost rather
+    than leaving him to reconstruct it from an invoice a month later.
+    """
+    from config import MODEL_PRICING, SUMMARY_COST_CEILING_USD
+    inp = getattr(usage, "prompt_tokens", 0) or 0
+    out = getattr(usage, "completion_tokens", 0) or 0
+    cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+    reasoning = getattr(getattr(usage, "completion_tokens_details", None),
+                        "reasoning_tokens", 0) or 0
+    if model not in MODEL_PRICING:
+        print(f"Cost: unknown -- {model} has no entry in config.MODEL_PRICING "
+              f"({inp} in / {out} out tokens)")
+        return float("nan")
+    p_in, p_cached, p_out = MODEL_PRICING[model]
+    cost = ((inp - cached) * p_in + cached * p_cached + out * p_out) / 1e6
+    print(f"Cost: ${cost:.4f} on {model} "
+          f"({inp} input [{cached} cached] / {out} output [{reasoning} reasoning] tokens)")
+    if cost > SUMMARY_COST_CEILING_USD:
+        print(f"⚠ OVER the ${SUMMARY_COST_CEILING_USD:.2f}/digest ceiling by "
+              f"${cost - SUMMARY_COST_CEILING_USD:.4f} -- consider a cheaper model "
+              f"or a smaller X_MAX_TWEETS_IN_PROMPT")
+    return cost
+
+
 class LLMSummarizer:
-    def __init__(self, model_name: str = "gpt-5-mini"):
+    def __init__(self, model_name: str = None):
         """Initialize the LLM summarizer with OpenAI"""
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in .env file")
-        
+
+        if model_name is None:
+            from config import SUMMARY_MODEL
+            model_name = SUMMARY_MODEL
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
+        self.last_cost = None
         
     def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None) -> str:
         """Create the summarization prompt for reddit posts + X tweets"""
@@ -125,14 +156,14 @@ class LLMSummarizer:
         
         try:
             # GPT-5 has different parameter requirements
-            if 'gpt-5' in self.model:
+            if self.model.startswith(('gpt-5', 'gpt-6', 'o1', 'o3', 'o4')):
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
                         {"role": "user", "content": prompt}
                     ]
-                    # no temperature or max_tokens for GPT-5
+                    # reasoning models reject temperature / max_tokens
                 )
             else:
                 response = self.client.chat.completions.create(
@@ -145,7 +176,8 @@ class LLMSummarizer:
                     max_tokens=1500
                 )
             summary = strip_blocked_links(response.choices[0].message.content.strip())
-            
+            self.last_cost = report_cost(self.model, response.usage)
+
             print("Summary generated successfully")
             return summary
         except Exception as e:
@@ -153,7 +185,7 @@ class LLMSummarizer:
             return f"Failed to generate summary: {str(e)}"
     
     def save_summary(self, summary: str, posts_analyzed: int, filename: str = None,
-                     tweets_analyzed: int = 0, banner: str = ""):
+                     tweets_analyzed: int = 0, banner: str = "", footer: str = ""):
         """Save the summary to a file"""
         
         from config import TIME_HORIZON_DAYS
@@ -173,7 +205,7 @@ class LLMSummarizer:
 {banner}<hr>
 {summary}
 <hr>
-<p><em>Generated at {datetime.now().strftime("%I:%M %p")}</em></p>
+<p><em>Generated at {datetime.now().strftime("%I:%M %p")} by {self.model}{footer}</em></p>
 """
         
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -227,7 +259,9 @@ if __name__ == "__main__":
 
     output_file = summarizer.save_summary(summary, len(posts),
                                           tweets_analyzed=len(tweets),
-                                          banner=banner)
+                                          banner=banner,
+                                          footer=(f" — ${summarizer.last_cost:.3f}"
+                                                  if summarizer.last_cost else ""))
 
     print("\n" + "="*60)
     print(summary)

@@ -9,72 +9,59 @@ SUMMARY_PROMPT_TEMPLATE = """You are an expert AI/tech analyst writing for an ex
 You will read (a) posts from X/Twitter accounts the reader personally follows and (b) posts from AI subreddits, both from the past {TIME_HORIZON_DAYS} days, and produce one combined digest that filters for the highest-value insights.
 Do NOT add facts not present in the provided posts. If a detail is missing (e.g. metrics, authors, dates), explicitly state "detail not in source" rather than guessing.
 
-**Source weighting — important.** The X material is the primary source: aim for roughly **65% of the digest's substance to come from X and 35% from Reddit**. The X accounts are ones the reader hand-picked, so a claim from X generally outranks a Reddit thread on the same topic. Attribute X items by handle (e.g. "@karpathy"), Reddit items by subreddit.
+**Organise by TOPIC, not by source.** This is the most important instruction about structure. Major Developments is a list of topics; each topic gets a short heading and then bullets, and the bullets under one topic MIX X posts and Reddit posts freely wherever they are about the same thing. A single X announcement and the Reddit thread reacting to it belong under the same heading, next to each other. Never create a section or subsection that exists only because of where a post came from.
+
+**Source weighting.** The X material is the primary source: aim for roughly **65% of the digest's substance to come from X and 35% from Reddit**. The X accounts are hand-picked by the reader, so a claim from X generally outranks a Reddit thread on the same topic. Attribute every item inline -- **@handle** for X, **r/subreddit** for Reddit -- so the reader can see the mix inside each topic. If a topic is genuinely single-source, leave it single-source rather than padding it.
 
 **Your priorities:**
-1. **Major developments** — Only include breakthroughs that plausibly shift the pareto frontier: new SOTA results, architecture innovations, notable open-source/model releases, or empirical results that overturn prior assumptions.
-   - When available, name the source (person/org/handle), describe what changed, and explain why it matters.
-   - If any of these are absent, note: "detail not in source".
-
-2. **Sentiment shifts** — Real changes in expert or community mood about AI companies, AGI timelines, regulation, or safety.
-   - Quote posts verbatim where possible.
-
-3. **Absurd/funny** — Pick one or two of the most bizarre or culturally revealing AI-related moments.
-   - Must be genuinely unusual, not just typical AI hype or doom.
+1. **Major developments** — grouped into topics. Only include things that plausibly shift the pareto frontier: new SOTA results, architecture innovations, notable open-source/model releases, or empirical results that overturn prior assumptions. Within a topic: name the source, describe what changed, explain why it matters. If a detail is absent, write "detail not in source".
+2. **Sentiment shifts** — real changes in expert or community mood about AI companies, AGI timelines, regulation, or safety. Quote verbatim where possible. Mix sources here too.
+3. **Absurd/funny** — one or two genuinely bizarre or culturally revealing AI moments. Not typical hype or doom.
 
 **Procedure:**
-- First, discard anything that is repetitive, widely known, or low impact (>80% discard rate target).
-- For each included item, write only what can be supported by the text. No speculation.
-- Group and order items by importance within each section.
-- Extract external links for Further Reading.
+- First, discard anything repetitive, widely known, or low impact (>80% discard rate target).
+- Cluster what survives into **3 to 7 topics** for Major Developments, ordered most important first, each with a short concrete heading (e.g. "GPT-6 Sol & Luna pricing", not "Model news").
+- Within a topic, order bullets by importance and keep each to 1-3 sentences.
+- Write only what the posts support. No speculation.
 
 **LINK RULES — STRICT, non-negotiable.**
 - Only ever link to **off-platform** destinations: papers, arxiv, blog posts, repos, docs, news articles, product pages.
 - **NEVER** emit a link to x.com, twitter.com, t.co, reddit.com, redd.it, or any other social-platform permalink. Those are blocked on the reader's devices, so such a link is both dead and a distraction.
 - The X items come with an `external links:` field that has already been filtered for you — prefer those verbatim.
-- If an item has no off-platform link, just describe it and do not invent one.
+- Put links **inline**, anchored on descriptive text inside the bullet that discusses them. Do not repeat a link you have already used inline.
+- If an item has no off-platform link, describe it and link nothing. Never invent a URL.
 
 **Output format (strict) — respond with a raw HTML fragment, NOT markdown.**
-Do not wrap the output in a code fence (no ```html) and do not include <html>/<head>/<body> tags — just the fragment below.
-Use only these tags: <h3> for section titles, <h4> for "Further Reading" subtitles, <ul>/<li> for bullets, <strong> for emphasis, <em> for asides/quotes, <a href="URL">text</a> for links. Do not use markdown syntax (no **, no leading -).
-Inside a <li>, write prose. Do NOT put "- Source:" / "- What changed:" / "- Why it matters:" dash-prefixed lines inside a list item -- a literal "-" renders as a stray dash in the email. Use <strong>Source:</strong> style labels or plain sentences instead, and nest a <ul> if you genuinely need sub-bullets.
-
-<h3>From the People You Follow (X)</h3>
-<ul>
-<li>[Highest-signal items from the X material, attributed by @handle. This is the biggest section.]</li>
-</ul>
+No code fence (no ```html), no <html>/<head>/<body>. Use only these tags: <h3> for the three section titles, <h4> for topic headings inside Major Developments, <ul>/<li> for bullets, <strong> for emphasis, <em> for asides/quotes, <a href="URL">text</a> for links.
+Do not use markdown syntax: no **, no leading -, no #. Inside a <li> write prose -- never dash-prefixed pseudo-fields like "- Source:" / "- What changed:", they render as stray dashes. If you want a label use <strong>Why it matters:</strong> inline.
 
 <h3>Major Developments</h3>
+<h4>[Concrete topic heading]</h4>
 <ul>
-<li>[Cross-source. Each item contains only details taken directly from the posts.]</li>
+<li>[Item, attributed inline with @handle or r/subreddit, with any off-platform link anchored in the text.]</li>
+<li>[Another item on the SAME topic, from the other source where one exists.]</li>
 </ul>
-
-<h4>Further Reading — Major Developments</h4>
+<h4>[Next topic heading]</h4>
 <ul>
-<li><a href="URL">[Actual off-platform URL found in posts]</a></li>
+<li>[...]</li>
 </ul>
-[Omit this Further Reading block entirely if no off-platform links were found.]
+[3 to 7 topics total.]
 
 <h3>Sentiment Shifts</h3>
 <ul>
-<li>[Same style, with quotes where possible.]</li>
+<li>[Mood change, attributed inline, quoting where possible.]</li>
 </ul>
-
-<h4>Further Reading — Sentiment Shifts</h4>
-<ul>
-<li><a href="URL">[Actual off-platform URL if found in posts]</a></li>
-</ul>
-[If none found, write: <li>No off-platform links found in posts</li>]
 
 <h3>The Absurd Corner</h3>
 <ul>
-<li>[Short, witty descriptions tied to what's in the source.]</li>
+<li>[One or two items, attributed inline.]</li>
 </ul>
 
-<h4>Further Reading — Absurd Corner</h4>
+<h3>Further Reading</h3>
 <ul>
-<li><a href="URL">[Actual off-platform URL if found in posts]</a></li>
+<li><a href="URL">[Any off-platform link worth keeping that you did not already use inline]</a></li>
 </ul>
+[Omit this whole section if every link is already inline or there are none.]
 
 === SOURCE A: X/TWITTER (accounts the reader follows), past {TIME_HORIZON_DAYS} days ===
 {tweets_content}
@@ -82,6 +69,26 @@ Inside a <li>, write prose. Do NOT put "- Source:" / "- What changed:" / "- Why 
 === SOURCE B: REDDIT, past {TIME_HORIZON_DAYS} days ===
 {posts_content}
 """
+
+# Model for the digest. gpt-6-astra is the better model but costs ~$0.55/run at
+# this prompt size ($10/1M in, $50/1M out) -- 3x over the ~$0.20 ceiling. Sol is
+# the best one that fits. Verify with the measured cost line the summarizer prints.
+SUMMARY_MODEL = "gpt-6-sol"
+
+# $ per 1M tokens, standard tier, for the cost line. Keep in sync with
+# developers.openai.com/api/docs/pricing -- these drift.
+MODEL_PRICING = {
+    "gpt-6-astra":  (10.00, 1.00, 50.00),
+    "gpt-6-sol":    (2.00,  0.20, 10.00),
+    "gpt-6-luna":   (0.10,  0.01, 0.50),
+    "gpt-5.6-sol":  (4.00,  0.40, 20.00),
+    "gpt-5.6-terra": (2.00, 0.20, 12.00),
+    "gpt-5.6-luna": (0.20,  0.02, 1.20),
+    "gpt-5.5":      (5.00,  0.50, 30.00),
+    "gpt-5-mini":   (0.25,  0.025, 2.00),
+}
+SUMMARY_COST_CEILING_USD = 0.20   # what Tim asked for; exceeding it prints a warning
+
 
 # --- X/Twitter ingestion (via twitterapi.io) ---------------------------------
 # The account universe is the union of whoever these accounts follow.
