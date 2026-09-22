@@ -263,8 +263,8 @@ def test_prompt_carries_all_three_sources_and_the_weighting():
             "id": "1", "handle": "karpathy", "author_name": "A", "likes": 5,
             "retweets": 2, "created_at": "x", "text": "X_MARKER",
             "external_links": ["https://arxiv.org/abs/1"]}]),
-        pages_content=format_pages([{"url": "https://arxiv.org/abs/1",
-                                     "title": "T", "text": "PAGE_MARKER"}]),
+        pages_content=format_pages([{"url": "https://arxiv.org/abs/1", "title": "T",
+                                     "text": "PAGE_MARKER", "status": "ok"}]),
     )
     assert "REDDIT_MARKER" in body and "X_MARKER" in body and "PAGE_MARKER" in body
     assert "65%" in body and "35%" in body
@@ -466,6 +466,7 @@ def test_cached_page_is_not_refetched(tmp_path, monkeypatch):
 
 def test_a_dead_page_does_not_break_enrichment(tmp_path, monkeypatch):
     import link_fetcher
+    from link_fetcher import LinkFetcher
 
     def boom(url, **kw):
         raise link_fetcher.requests.ConnectTimeout("nope")
@@ -474,7 +475,11 @@ def test_a_dead_page_does_not_break_enrichment(tmp_path, monkeypatch):
     f = LinkFetcher(cache_dir=str(tmp_path))
     pages = f.enrich([{"likes": 1, "retweets": 0,
                        "external_links": ["https://example.com/a"]}], [], limit=5)
-    assert pages == []
+    # the record survives (it is still a link for the human) but contributes no
+    # text, so nothing downstream can mistake it for something we read
+    assert len(pages) == 1 and pages[0]["text"] == ""
+    assert pages[0]["status"].startswith("failed")
+    assert link_fetcher.readable(pages) == []
     assert f.stats["failed"] == 1
 
 
@@ -492,3 +497,108 @@ def test_extraction_drops_scripts():
     title, text = extract_text(
         "<html><title>T</title><script>alert('x')</script><p>real text</p></html>")
     assert "alert" not in text and "real text" in text
+
+
+# --- unreadable links are still links ---------------------------------------
+
+def _pages():
+    return [{"url": "https://ok.com/a", "title": "Read me", "text": "body text",
+             "status": "ok"},
+            {"url": "https://openai.com/index/gpt6/", "title": "Introducing GPT-6",
+             "text": "", "status": "skipped: HTTP 403"},
+            {"url": "https://www.wsj.com/a", "title": "", "text": "",
+             "status": "skipped: HTTP 401"}]
+
+
+def test_enrich_returns_unreadable_pages_too(tmp_path, monkeypatch):
+    """Tim's point: a page I could not read is still a link he can open, and
+    dropping it loses the most valuable link in the digest."""
+    import link_fetcher
+
+    class R:
+        status_code = 403
+        headers = {"content-type": "text/html"}
+        encoding = "utf-8"
+
+        def close(self): pass
+
+    monkeypatch.setattr(link_fetcher.requests, "get", lambda url, **kw: R())
+    f = link_fetcher.LinkFetcher(cache_dir=str(tmp_path))
+    pages = f.enrich([{"likes": 1, "retweets": 0,
+                       "external_links": ["https://paywalled.com/a"]}], [], limit=5)
+    assert len(pages) == 1
+    assert pages[0]["status"] == "skipped: HTTP 403"
+    assert link_fetcher.readable(pages) == []
+    assert len(link_fetcher.unreadable(pages)) == 1
+
+
+def test_prompt_tells_the_model_to_link_pages_it_could_not_read():
+    from link_fetcher import format_pages
+    body = format_pages(_pages())
+    assert "COULD NOT READ (still link them)" in body
+    assert "https://openai.com/index/gpt6/" in body
+    assert "HTTP 403" in body
+    from config import SUMMARY_PROMPT_TEMPLATE as T
+    assert "still a link worth giving the reader" in T
+    assert "never drop a link just because it was unreadable" in T
+
+
+def test_wall_appendix_lists_every_unreadable_link():
+    from llm_summarizer import wall_appendix
+    out = wall_appendix(_pages())
+    assert 'href="https://openai.com/index/gpt6/"' in out
+    assert 'href="https://www.wsj.com/a"' in out
+    assert "https://ok.com/a" not in out          # that one we read; it is in the body
+    assert out.count("<li>") == 2
+
+
+def test_wall_appendix_renders_readable_labels_not_raw_urls():
+    """Asserted through wall_appendix, not through link_label: a green test on
+    the helper alone let a digest ship with unwired raw-URL labels."""
+    from llm_summarizer import wall_appendix
+    out = wall_appendix([{"url": "https://www.wsj.com/opinion/a-grail-test-99?st=y",
+                          "title": "", "text": "", "status": "skipped: HTTP 401"}])
+    assert ">wsj.com — a grail test 99<" in out
+    assert ">www.wsj.com/opinion" not in out
+    assert 'href="https://www.wsj.com/opinion/a-grail-test-99?st=y"' in out
+
+
+def test_wall_appendix_is_empty_when_everything_was_readable():
+    from llm_summarizer import wall_appendix
+    assert wall_appendix([{"url": "https://ok.com", "title": "t", "text": "x",
+                           "status": "ok"}]) == ""
+
+
+def test_wall_appendix_still_refuses_blocked_domains():
+    """Defence in depth: collect_links already filters these, but the invariant
+    'no social link leaves this pipeline' must not depend on that."""
+    from llm_summarizer import wall_appendix
+    out = wall_appendix([{"url": "https://x.com/a/status/1", "title": "tweet",
+                          "text": "", "status": "skipped: HTTP 403"}])
+    assert "x.com" not in out and "tweet" in out
+
+
+def test_walled_link_labels_are_readable_without_a_title():
+    """A walled page has no title, and a raw URL truncated mid-querystring is
+    not something you want in an email."""
+    from link_fetcher import link_label
+    assert link_label("https://openai.com/index/advisory-group-on-mathematics-and-ai/") \
+        == "openai.com — advisory group on mathematics and ai"
+    assert link_label("https://www.wsj.com/opinion/a-grail-test-376051a0?st=y&x=1") \
+        == "wsj.com — a grail test 376051a0"
+    assert link_label("https://clintonglobal.org/2026") == "clintonglobal.org — 2026"
+    assert link_label("https://example.com") == "example.com"
+    # a generic terminal segment tells you nothing; use the one before it
+    assert link_label("https://www.thelancet.com/journals/lancet/article/PIIS0140-6736/fulltext") \
+        == "thelancet.com — PIIS0140 6736"
+    assert link_label("https://example.com/x", "Real Title") == "Real Title"
+
+
+def test_case_variant_urls_are_collected_once():
+    """@someone tweets X.ai/build, someone else x.ai/Build -- one page, and we
+    would otherwise pay for it twice and list it twice."""
+    from link_fetcher import LinkFetcher
+    got = LinkFetcher.collect_links(
+        [{"likes": 5, "retweets": 0,
+          "external_links": ["https://X.ai/build", "https://x.ai/Build"]}], [], limit=9)
+    assert got == ["https://X.ai/build"]
