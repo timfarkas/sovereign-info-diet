@@ -8,7 +8,71 @@ from typing import List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-load_dotenv()
+import re
+
+from x_scraper import is_blocked_link
+
+load_dotenv(os.getenv("DOTENV_PATH") or None)
+
+
+BLOCKED_HREF = re.compile(r'<a\s+[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.S | re.I)
+
+
+def strip_blocked_links(html: str) -> str:
+    """Replace any <a> pointing at a blocked platform with its plain text.
+
+    Belt to the prompt's braces: the model is told not to emit x.com/reddit.com
+    links, and this guarantees it. Tim's devices block those domains, so one
+    leaking through is a dead link in his inbox.
+    """
+    def repl(m):
+        return m.group(2) if is_blocked_link(m.group(1)) else m.group(0)
+    return BLOCKED_HREF.sub(repl, html)
+
+
+def format_tweets(tweets: List[Dict], limit: int = None) -> str:
+    """Render tweets for the prompt, highest-engagement first."""
+    if limit is None:
+        try:
+            from config import X_MAX_TWEETS_IN_PROMPT as limit
+        except ImportError:
+            limit = 400
+    ranked = sorted(tweets, key=lambda t: (t.get("likes") or 0) + (t.get("retweets") or 0),
+                    reverse=True)[:limit]
+    ranked.sort(key=lambda t: t.get("id") or "", reverse=True)
+    out = ""
+    for i, t in enumerate(ranked, 1):
+        eng = f"{t.get('likes') or 0}♥ {t.get('retweets') or 0}RT"
+        out += f"\n{i}. @{t.get('handle')} ({t.get('author_name')}) [{eng}] {t.get('created_at')}\n"
+        out += f"   {(t.get('text') or '').strip()}\n"
+        if t.get("quoted_text"):
+            out += f"   quoting: {t['quoted_text'].strip()[:200]}\n"
+        if t.get("external_links"):
+            out += f"   external links: {', '.join(t['external_links'][:3])}\n"
+    return out
+
+
+def health_banner(path: str = "extracts/x_health.json") -> str:
+    """An HTML notice when the X feed is sick, empty string when it is fine."""
+    f = Path(path)
+    if not f.exists():
+        return ('<p><strong>⚠ X ingestion did not run</strong> — no health file at '
+                f'{path}. The digest below is Reddit-only.</p>')
+    h = json.loads(f.read_text())
+    if h.get("status") == "healthy":
+        return ""
+    bits = [f"status <strong>{h.get('status')}</strong>",
+            f"{h.get('batches_failed')}/{h.get('batches_attempted')} batches failed",
+            f"{h.get('tweets_new')} new tweets"]
+    if h.get("tweet_cap_hit"):
+        bits.append("per-run tweet cap hit")
+    for n in (h.get("notes") or []):
+        bits.append(n)
+    err = (h.get("errors") or [])
+    tail = f"<br><em>last error: {err[-1][:300]}</em>" if err else ""
+    return ("<p><strong>⚠ X ingestion needs a look</strong> — " + "; ".join(bits)
+            + f". Checked {h.get('checked_at')}.{tail}</p>")
+
 
 class LLMSummarizer:
     def __init__(self, model_name: str = "gpt-5-mini"):
@@ -20,8 +84,8 @@ class LLMSummarizer:
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
         
-    def create_summary_prompt(self, posts: List[Dict]) -> str:
-        """Create the summarization prompt for all posts"""
+    def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None) -> str:
+        """Create the summarization prompt for reddit posts + X tweets"""
         
         from config import TIME_HORIZON_DAYS, SUMMARY_PROMPT_TEMPLATE
         
@@ -42,20 +106,22 @@ class LLMSummarizer:
                     comment_preview = comment['body'][:150] + "..." if len(comment['body']) > 150 else comment['body']
                     posts_content += f"   - [{comment['score']}pts] {comment_preview}\n"
         
-        # format the prompt template
         prompt = SUMMARY_PROMPT_TEMPLATE.format(
             TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
-            posts_content=posts_content
+            posts_content=posts_content or "(no reddit posts in this window)",
+            tweets_content=format_tweets(tweets or []) or "(no X posts in this window)",
         )
         
         return prompt
     
-    def summarize_posts(self, posts: List[Dict]) -> str:
+    def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None) -> str:
         """Generate a summary of all posts"""
         
-        print(f"\nAnalyzing {len(posts)} posts with {self.model}...")
+        tweets = tweets or []
+        print(f"\nAnalyzing {len(posts)} reddit posts + {len(tweets)} X posts "
+              f"with {self.model}...")
         
-        prompt = self.create_summary_prompt(posts)
+        prompt = self.create_summary_prompt(posts, tweets)
         
         try:
             # GPT-5 has different parameter requirements
@@ -78,7 +144,7 @@ class LLMSummarizer:
                     temperature=0.7,
                     max_tokens=1500
                 )
-            summary = response.choices[0].message.content.strip()
+            summary = strip_blocked_links(response.choices[0].message.content.strip())
             
             print("Summary generated successfully")
             return summary
@@ -86,7 +152,8 @@ class LLMSummarizer:
             print(f"Error generating summary: {e}")
             return f"Failed to generate summary: {str(e)}"
     
-    def save_summary(self, summary: str, posts_analyzed: int, filename: str = None):
+    def save_summary(self, summary: str, posts_analyzed: int, filename: str = None,
+                     tweets_analyzed: int = 0, banner: str = ""):
         """Save the summary to a file"""
         
         from config import TIME_HORIZON_DAYS
@@ -102,8 +169,8 @@ class LLMSummarizer:
 
         # add header
         full_content = f"""<h1>AI Digest - {datetime.now().strftime("%Y-%m-%d")}</h1>
-<p><em>Analyzed {posts_analyzed} posts from the past {TIME_HORIZON_DAYS} days</em></p>
-<hr>
+<p><em>Analyzed {tweets_analyzed} X posts and {posts_analyzed} Reddit posts from the past {TIME_HORIZON_DAYS} days</em></p>
+{banner}<hr>
 {summary}
 <hr>
 <p><em>Generated at {datetime.now().strftime("%I:%M %p")}</em></p>
@@ -117,22 +184,51 @@ class LLMSummarizer:
 
 
 if __name__ == "__main__":
-    # load scraped posts
     import glob
-    latest_scrape = max(glob.glob("extracts/reddit_data_*.json"))
-    
-    with open(latest_scrape, 'r') as f:
-        posts = json.load(f)
-    
-    print(f"Loaded {len(posts)} posts from {latest_scrape}")
-    
-    # generate summary
+    import time
+
+    MAX_AGE_HOURS = 20  # a daily pipeline: anything older than this is yesterday's
+
+    def _latest_fresh(pattern):
+        """Newest matching file, but only if it is from THIS run's window.
+
+        Without this guard a failed leg silently falls back to yesterday's dump
+        and Tim gets stale news presented as today's. Staler than no news.
+        """
+        hits = sorted(glob.glob(pattern), key=lambda f: Path(f).stat().st_mtime)
+        if not hits:
+            return None, "no file"
+        newest = hits[-1]
+        age_h = (time.time() - Path(newest).stat().st_mtime) / 3600
+        if age_h > MAX_AGE_HOURS:
+            return None, f"{newest} is {age_h:.1f}h old (stale, ignored)"
+        return newest, f"{newest} ({age_h:.1f}h old)"
+
+    reddit_file, reddit_why = _latest_fresh("extracts/reddit_data_*.json")
+    x_file, x_why = _latest_fresh("extracts/x_data_*.json")
+
+    posts = json.load(open(reddit_file)) if reddit_file else []
+    tweets = json.load(open(x_file)) if x_file else []
+    print(f"Loaded {len(posts)} reddit posts from {reddit_why}")
+    print(f"Loaded {len(tweets)} X posts from {x_why}")
+
+    if not posts and not tweets:
+        raise SystemExit("no input from either source -- refusing to mail an empty digest")
+
     summarizer = LLMSummarizer()
-    summary = summarizer.summarize_posts(posts)
-    
-    # save and display
-    output_file = summarizer.save_summary(summary, len(posts))
-    
+    summary = summarizer.summarize_posts(posts, tweets)
+
+    banner = health_banner()
+    if not x_file:
+        banner += (f'<p><strong>⚠ No fresh X data</strong> — {x_why}. '
+                   f'The digest below is Reddit-only.</p>')
+    if not reddit_file:
+        banner += (f'<p><strong>⚠ No fresh Reddit data</strong> — {reddit_why}.</p>')
+
+    output_file = summarizer.save_summary(summary, len(posts),
+                                          tweets_analyzed=len(tweets),
+                                          banner=banner)
+
     print("\n" + "="*60)
     print(summary)
     print("="*60)
