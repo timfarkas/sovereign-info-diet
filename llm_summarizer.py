@@ -10,6 +10,7 @@ from pathlib import Path
 
 import re
 
+from link_fetcher import LinkFetcher, format_pages
 from x_scraper import is_blocked_link
 
 load_dotenv(os.getenv("DOTENV_PATH") or None)
@@ -115,44 +116,56 @@ class LLMSummarizer:
         self.model = model_name
         self.last_cost = None
         
-    def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None) -> str:
+    def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None,
+                              pages: List[Dict] = None) -> str:
         """Create the summarization prompt for reddit posts + X tweets"""
         
         from config import TIME_HORIZON_DAYS, SUMMARY_PROMPT_TEMPLATE
         
+        from config import REDDIT_SELFTEXT_CHARS, REDDIT_COMMENT_CHARS
+
+        def clip(text, n):
+            return text[:n] + "..." if len(text) > n else text
+
         # format all posts into a digest
         posts_content = ""
         for i, post in enumerate(posts, 1):
             posts_content += f"\n{i}. {post['title']} [{post['score']} pts]\n"
             posts_content += f"   r/{post['subreddit']}\n"
-            
+
+            # a link post's destination -- its content shows up in SOURCE C
+            if post.get('url') and not is_blocked_link(post['url']):
+                posts_content += f"   links to: {post['url']}\n"
+
             if post.get('selftext'):
-                preview = post['selftext'][:200] + "..." if len(post['selftext']) > 200 else post['selftext']
-                posts_content += f"   Text: {preview}\n"
-            
+                posts_content += f"   Text: {clip(post['selftext'], REDDIT_SELFTEXT_CHARS)}\n"
+
             # include top 3 comments for context
             if post.get('comments'):
                 posts_content += "   Top comments:\n"
                 for comment in post['comments'][:3]:
-                    comment_preview = comment['body'][:150] + "..." if len(comment['body']) > 150 else comment['body']
-                    posts_content += f"   - [{comment['score']}pts] {comment_preview}\n"
+                    posts_content += (f"   - [{comment['score']}pts] "
+                                      f"{clip(comment['body'], REDDIT_COMMENT_CHARS)}\n")
         
         prompt = SUMMARY_PROMPT_TEMPLATE.format(
             TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
             posts_content=posts_content or "(no reddit posts in this window)",
             tweets_content=format_tweets(tweets or []) or "(no X posts in this window)",
+            pages_content=format_pages(pages or []),
         )
         
         return prompt
     
-    def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None) -> str:
+    def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None,
+                        pages: List[Dict] = None) -> str:
         """Generate a summary of all posts"""
         
-        tweets = tweets or []
+        tweets, pages = tweets or [], pages or []
         print(f"\nAnalyzing {len(posts)} reddit posts + {len(tweets)} X posts "
-              f"with {self.model}...")
+              f"+ {len(pages)} fetched pages with {self.model}...")
         
-        prompt = self.create_summary_prompt(posts, tweets)
+        prompt = self.create_summary_prompt(posts, tweets, pages)
+        print(f"Prompt is {len(prompt):,} chars")
         
         try:
             # GPT-5 has different parameter requirements
@@ -247,8 +260,18 @@ if __name__ == "__main__":
     if not posts and not tweets:
         raise SystemExit("no input from either source -- refusing to mail an empty digest")
 
+    from config import LINK_FETCH_ENABLED, LINK_FETCH_MAX_PAGES, LINK_FETCH_MAX_CHARS
+    pages = []
+    if LINK_FETCH_ENABLED:
+        # a fetch leg that dies must not take the digest with it
+        try:
+            pages = LinkFetcher().enrich(tweets, posts, limit=LINK_FETCH_MAX_PAGES,
+                                         max_chars=LINK_FETCH_MAX_CHARS)
+        except Exception as e:
+            print(f"[links] enrichment failed, continuing without it: {e}")
+
     summarizer = LLMSummarizer()
-    summary = summarizer.summarize_posts(posts, tweets)
+    summary = summarizer.summarize_posts(posts, tweets, pages)
 
     banner = health_banner()
     if not x_file:
@@ -261,6 +284,7 @@ if __name__ == "__main__":
                                           tweets_analyzed=len(tweets),
                                           banner=banner,
                                           footer=(f" — ${summarizer.last_cost:.3f}"
+                                                  f", {len(pages)} linked pages read"
                                                   if summarizer.last_cost else ""))
 
     print("\n" + "="*60)
