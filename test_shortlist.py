@@ -229,6 +229,14 @@ def test_derive_labels_uses_the_eviction_log(store):
     assert recommender_model.derive_labels(store, now=NOW)["a"][0] == 0
 
 
+def test_a_same_day_eviction_is_not_evidence_he_passed(store):
+    """Two runs in one night must not manufacture negatives out of scheduling."""
+    stock(store, [doc("a", saved_at=iso(1))])
+    store.log_event("a", "added", "2026-09-20")
+    store.log_event("a", "evicted", "2026-09-20")
+    assert "a" not in recommender_model.derive_labels(store, now=NOW)
+
+
 # -- what gets embedded ------------------------------------------------------
 
 

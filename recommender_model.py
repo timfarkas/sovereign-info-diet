@@ -83,9 +83,7 @@ def label_for(doc, evicted_unopened=False, now=None):
 
 def derive_labels(store, now=None):
     """{doc_id: (y, weight)} across the whole corpus."""
-    evicted = {
-        e["doc_id"] for e in store.events() if e["action"] == "evicted"
-    }
+    evicted = _matured_evictions(store)
     labels = {}
     for doc in store.documents():
         result = label_for(doc, evicted_unopened=doc["id"] in evicted, now=now)
@@ -94,6 +92,25 @@ def derive_labels(store, now=None):
         y, reason = result
         labels[doc["id"]] = (y, config.LABEL_WEIGHTS[reason], reason)
     return labels
+
+
+def _matured_evictions(store):
+    """Evictions that count as evidence he passed on something.
+
+    A document evicted on the same day it was added was never really offered --
+    that happens when the job runs twice in one night -- and reading it as a
+    rejection would manufacture negatives out of our own scheduling.
+    """
+    added = {}
+    matured = set()
+    for event in store.events():
+        if event["action"] == "added":
+            added[event["doc_id"]] = event["cycle"]
+        elif event["action"] == "evicted":
+            first_seen = added.get(event["doc_id"])
+            if first_seen and event["cycle"] > first_seen:
+                matured.add(event["doc_id"])
+    return matured
 
 
 def features(doc, vector):
