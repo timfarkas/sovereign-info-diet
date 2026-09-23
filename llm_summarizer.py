@@ -8,110 +8,272 @@ from typing import List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-load_dotenv()
+import re
+
+from link_fetcher import (LinkFetcher, format_pages, link_label, readable,
+                          unreadable)
+from x_scraper import is_blocked_link
+
+load_dotenv(os.getenv("DOTENV_PATH") or None)
+
+
+BLOCKED_HREF = re.compile(r'<a\s+[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.S | re.I)
+
+
+def strip_blocked_links(html: str) -> str:
+    """Replace any <a> pointing at a blocked platform with its plain text.
+
+    Belt to the prompt's braces: the model is told not to emit x.com/reddit.com
+    links, and this guarantees it. Tim's devices block those domains, so one
+    leaking through is a dead link in his inbox.
+    """
+    def repl(m):
+        return m.group(2) if is_blocked_link(m.group(1)) else m.group(0)
+    return BLOCKED_HREF.sub(repl, html)
+
+
+def by_engagement(tweets: List[Dict]) -> List[Dict]:
+    return sorted(tweets, key=lambda t: (t.get("likes") or 0) + (t.get("retweets") or 0),
+                  reverse=True)
+
+
+def format_tweets(tweets: List[Dict], limit: int = None) -> str:
+    """Render tweets for the prompt, highest-engagement first."""
+    if limit is None:
+        try:
+            from config import X_MAX_TWEETS_IN_PROMPT as limit
+        except ImportError:
+            limit = None
+    ranked = by_engagement(tweets)[:limit]
+    ranked.sort(key=lambda t: t.get("id") or "", reverse=True)
+    out = ""
+    for i, t in enumerate(ranked, 1):
+        eng = f"{t.get('likes') or 0}♥ {t.get('retweets') or 0}RT"
+        out += f"\n{i}. @{t.get('handle')} ({t.get('author_name')}) [{eng}] {t.get('created_at')}\n"
+        out += f"   {(t.get('text') or '').strip()}\n"
+        if t.get("quoted_text"):
+            out += f"   quoting: {t['quoted_text'].strip()[:200]}\n"
+        if t.get("external_links"):
+            out += f"   external links: {', '.join(t['external_links'][:3])}\n"
+    return out
+
+
+def wall_appendix(pages: List[Dict]) -> str:
+    """HTML list of links the pipeline could not read, so the human can.
+
+    Built in code rather than left to the model, because the value here is
+    exhaustiveness: this is the set of things nobody has read yet, and a model
+    deciding which of them to mention defeats the point.
+    """
+    blocked = unreadable(pages)
+    if not blocked:
+        return ""
+    rows = ""
+    for p in blocked:
+        why = p["status"].replace("skipped: ", "").replace("failed: ", "")
+        label = link_label(p["url"], p.get("title", ""))
+        rows += f'<li><a href="{p["url"]}">{label}</a> <em>({why})</em></li>\n'
+    # scrubbed like the model's own output: the no-social-links invariant holds
+    # here too, regardless of what upstream let through
+    return strip_blocked_links(
+        "\n<h3>Behind a Wall — You Can Probably Read These</h3>\n"
+        "<p><em>Linked from the posts above, but a paywall or bot-wall stopped me "
+        "from reading them. Nothing in the digest above reflects their actual "
+        "contents.</em></p>\n<ul>\n" + rows + "</ul>\n")
+
+
+def health_banner(path: str = "extracts/x_health.json") -> str:
+    """An HTML notice when the X feed is sick, empty string when it is fine."""
+    f = Path(path)
+    if not f.exists():
+        return ('<p><strong>⚠ X ingestion did not run</strong> — no health file at '
+                f'{path}. The digest below is Reddit-only.</p>')
+    h = json.loads(f.read_text())
+    if h.get("status") == "healthy":
+        return ""
+    bits = [f"status <strong>{h.get('status')}</strong>",
+            f"{h.get('batches_failed')}/{h.get('batches_attempted')} batches failed",
+            f"{h.get('tweets_new')} new tweets"]
+    if h.get("tweet_cap_hit"):
+        bits.append("per-run tweet cap hit")
+    for n in (h.get("notes") or []):
+        bits.append(n)
+    err = (h.get("errors") or [])
+    tail = f"<br><em>last error: {err[-1][:300]}</em>" if err else ""
+    return ("<p><strong>⚠ X ingestion needs a look</strong> — " + "; ".join(bits)
+            + f". Checked {h.get('checked_at')}.{tail}</p>")
+
+
+def report_cost(model: str, usage) -> float:
+    """Print what this call cost and flag it if it blew the ceiling.
+
+    Tim set the budget per digest, so the digest should say what it cost rather
+    than leaving him to reconstruct it from an invoice a month later.
+    """
+    from config import (SUMMARY_COST_CEILING_USD, SUMMARY_MODEL_PRICE,
+                        SUMMARY_SERVICE_TIER)
+    inp = getattr(usage, "prompt_tokens", 0) or 0
+    out = getattr(usage, "completion_tokens", 0) or 0
+    cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+    reasoning = getattr(getattr(usage, "completion_tokens_details", None),
+                        "reasoning_tokens", 0) or 0
+    p_in, p_cached, p_out = SUMMARY_MODEL_PRICE
+    cost = ((inp - cached) * p_in + cached * p_cached + out * p_out) / 1e6
+    print(f"Cost: ${cost:.4f} on {model} ({SUMMARY_SERVICE_TIER} tier) "
+          f"({inp} input [{cached} cached] / {out} output [{reasoning} reasoning] tokens)")
+    if cost > SUMMARY_COST_CEILING_USD:
+        print(f"⚠ OVER the ${SUMMARY_COST_CEILING_USD:.2f}/digest ceiling by "
+              f"${cost - SUMMARY_COST_CEILING_USD:.4f} -- drop to gpt-6-luna, or trim "
+              f"LINK_FETCH_MAX_PAGES / LINK_FETCH_MAX_CHARS")
+    return cost
+
 
 class LLMSummarizer:
-    def __init__(self, model_name: str = "gpt-5-mini"):
+    def __init__(self, model_name: str = None):
         """Initialize the LLM summarizer with OpenAI"""
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in .env file")
-        
+
+        if model_name is None:
+            from config import SUMMARY_MODEL
+            model_name = SUMMARY_MODEL
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
+        self.last_cost = None
+        self.tweets_dropped = 0
         
-    def create_summary_prompt(self, posts: List[Dict]) -> str:
-        """Create the summarization prompt for all posts"""
+    def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None,
+                              pages: List[Dict] = None) -> str:
+        """Create the summarization prompt for reddit posts + X tweets"""
         
         from config import TIME_HORIZON_DAYS, SUMMARY_PROMPT_TEMPLATE
         
+        from config import REDDIT_SELFTEXT_CHARS, REDDIT_COMMENT_CHARS
+
+        def clip(text, n):
+            return text[:n] + "..." if len(text) > n else text
+
         # format all posts into a digest
         posts_content = ""
         for i, post in enumerate(posts, 1):
             posts_content += f"\n{i}. {post['title']} [{post['score']} pts]\n"
             posts_content += f"   r/{post['subreddit']}\n"
-            
+
+            # a link post's destination -- its content shows up in SOURCE C
+            if post.get('url') and not is_blocked_link(post['url']):
+                posts_content += f"   links to: {post['url']}\n"
+
             if post.get('selftext'):
-                preview = post['selftext'][:200] + "..." if len(post['selftext']) > 200 else post['selftext']
-                posts_content += f"   Text: {preview}\n"
-            
+                posts_content += f"   Text: {clip(post['selftext'], REDDIT_SELFTEXT_CHARS)}\n"
+
             # include top 3 comments for context
             if post.get('comments'):
                 posts_content += "   Top comments:\n"
                 for comment in post['comments'][:3]:
-                    comment_preview = comment['body'][:150] + "..." if len(comment['body']) > 150 else comment['body']
-                    posts_content += f"   - [{comment['score']}pts] {comment_preview}\n"
+                    posts_content += (f"   - [{comment['score']}pts] "
+                                      f"{clip(comment['body'], REDDIT_COMMENT_CHARS)}\n")
         
-        # format the prompt template
-        prompt = SUMMARY_PROMPT_TEMPLATE.format(
-            TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
-            posts_content=posts_content
-        )
-        
+        from config import (CHARS_PER_TOKEN, SUMMARY_COST_CEILING_USD,
+                            SUMMARY_MODEL_PRICE)
+
+        def build(tws):
+            return SUMMARY_PROMPT_TEMPLATE.format(
+                TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
+                posts_content=posts_content or "(no reddit posts in this window)",
+                tweets_content=format_tweets(tws) or "(no X posts in this window)",
+                pages_content=format_pages(pages or []),
+            )
+
+        # Keep EVERY tweet by default. If the corpus has grown past what the
+        # budget can pay for, drop the lowest-engagement tail -- but record how
+        # many, and say so in the digest. A silent trim is the bug Tim caught;
+        # an announced one is a budget working as intended.
+        kept = by_engagement(tweets or [])
+        price_in = SUMMARY_MODEL_PRICE[0]
+        # leave a tenth of the ceiling for output tokens
+        budget_chars = int((SUMMARY_COST_CEILING_USD * 0.9 / price_in) * 1e6
+                           * CHARS_PER_TOKEN)
+        prompt = build(kept)
+        self.tweets_dropped = 0
+        while len(prompt) > budget_chars and len(kept) > 25:
+            drop = max(1, int(len(kept) * 0.1))
+            kept = kept[:-drop]
+            self.tweets_dropped += drop
+            prompt = build(kept)
+        if self.tweets_dropped:
+            print(f"⚠ prompt over the ${SUMMARY_COST_CEILING_USD:.2f} budget: dropped "
+                  f"the {self.tweets_dropped} lowest-engagement tweets of "
+                  f"{len(tweets or [])} to fit")
         return prompt
     
-    def summarize_posts(self, posts: List[Dict]) -> str:
+    def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None,
+                        pages: List[Dict] = None) -> str:
         """Generate a summary of all posts"""
         
-        print(f"\nAnalyzing {len(posts)} posts with {self.model}...")
+        tweets, pages = tweets or [], pages or []
+        print(f"\nAnalyzing {len(posts)} reddit posts + {len(tweets)} X posts "
+              f"+ {len(readable(pages))} read pages "
+              f"({len(unreadable(pages))} walled but still linkable) "
+              f"with {self.model}...")
         
-        prompt = self.create_summary_prompt(posts)
+        prompt = self.create_summary_prompt(posts, tweets, pages)
+        print(f"Prompt is {len(prompt):,} chars")
         
+        from config import SUMMARY_SERVICE_TIER
+        messages = [
+            {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
+            {"role": "user", "content": prompt},
+        ]
+        # reasoning models reject temperature / max_tokens
+        extra = ({} if self.model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+                 else {"temperature": 0.7, "max_tokens": 1500})
+
+        def call(tier):
+            return self.client.chat.completions.create(
+                model=self.model, messages=messages, service_tier=tier, **extra)
+
         try:
-            # GPT-5 has different parameter requirements
-            if 'gpt-5' in self.model:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
-                        {"role": "user", "content": prompt}
-                    ]
-                    # no temperature or max_tokens for GPT-5
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1500
-                )
-            summary = response.choices[0].message.content.strip()
-            
+            try:
+                response = call(SUMMARY_SERVICE_TIER)
+            except Exception as e:
+                if SUMMARY_SERVICE_TIER == "default":
+                    raise
+                # flex trades capacity for price; falling back beats no digest
+                print(f"[{SUMMARY_SERVICE_TIER} tier unavailable: {e} -- "
+                      f"retrying on standard tier at full price]")
+                response = call("default")
+            summary = strip_blocked_links(response.choices[0].message.content.strip())
+            self.last_cost = report_cost(self.model, response.usage)
+
             print("Summary generated successfully")
             return summary
         except Exception as e:
             print(f"Error generating summary: {e}")
             return f"Failed to generate summary: {str(e)}"
     
-    def save_summary(self, summary: str, posts_analyzed: int, filename: str = None):
+    def save_summary(self, summary: str, posts_analyzed: int, filename: str = None,
+                     tweets_analyzed: int = 0, banner: str = "", footer: str = ""):
         """Save the summary to a file"""
         
         from config import TIME_HORIZON_DAYS
         
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d")
-            filename = f"summary_{timestamp}.md"
-        
+            filename = f"summary_{timestamp}.html"
+
         output_dir = Path("extracts/summaries")
         output_dir.mkdir(exist_ok=True, parents=True)
-        
+
         filepath = output_dir / filename
-        
+
         # add header
-        full_content = f"""# AI Digest - {datetime.now().strftime("%Y-%m-%d")}
-
-*Analyzed {posts_analyzed} posts from the past {TIME_HORIZON_DAYS} days*
-
----
-
+        full_content = f"""<h1>AI Digest - {datetime.now().strftime("%Y-%m-%d")}</h1>
+<p><em>Analyzed {tweets_analyzed} X posts and {posts_analyzed} Reddit posts from the past {TIME_HORIZON_DAYS} days</em></p>
+{banner}<hr>
 {summary}
-
----
-
-*Generated at {datetime.now().strftime("%I:%M %p")}*
+<hr>
+<p><em>Generated at {datetime.now().strftime("%I:%M %p")} by {self.model}{footer}</em></p>
 """
         
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -122,22 +284,71 @@ class LLMSummarizer:
 
 
 if __name__ == "__main__":
-    # load scraped posts
     import glob
-    latest_scrape = max(glob.glob("extracts/reddit_data_*.json"))
-    
-    with open(latest_scrape, 'r') as f:
-        posts = json.load(f)
-    
-    print(f"Loaded {len(posts)} posts from {latest_scrape}")
-    
-    # generate summary
+    import time
+
+    MAX_AGE_HOURS = 20  # a daily pipeline: anything older than this is yesterday's
+
+    def _latest_fresh(pattern):
+        """Newest matching file, but only if it is from THIS run's window.
+
+        Without this guard a failed leg silently falls back to yesterday's dump
+        and Tim gets stale news presented as today's. Staler than no news.
+        """
+        hits = sorted(glob.glob(pattern), key=lambda f: Path(f).stat().st_mtime)
+        if not hits:
+            return None, "no file"
+        newest = hits[-1]
+        age_h = (time.time() - Path(newest).stat().st_mtime) / 3600
+        if age_h > MAX_AGE_HOURS:
+            return None, f"{newest} is {age_h:.1f}h old (stale, ignored)"
+        return newest, f"{newest} ({age_h:.1f}h old)"
+
+    reddit_file, reddit_why = _latest_fresh("extracts/reddit_data_*.json")
+    x_file, x_why = _latest_fresh("extracts/x_data_*.json")
+
+    posts = json.load(open(reddit_file)) if reddit_file else []
+    tweets = json.load(open(x_file)) if x_file else []
+    print(f"Loaded {len(posts)} reddit posts from {reddit_why}")
+    print(f"Loaded {len(tweets)} X posts from {x_why}")
+
+    if not posts and not tweets:
+        raise SystemExit("no input from either source -- refusing to mail an empty digest")
+
+    from config import LINK_FETCH_ENABLED, LINK_FETCH_MAX_PAGES, LINK_FETCH_MAX_CHARS
+    pages = []
+    if LINK_FETCH_ENABLED:
+        # a fetch leg that dies must not take the digest with it
+        try:
+            pages = LinkFetcher().enrich(tweets, posts, limit=LINK_FETCH_MAX_PAGES,
+                                         max_chars=LINK_FETCH_MAX_CHARS)
+        except Exception as e:
+            print(f"[links] enrichment failed, continuing without it: {e}")
+
     summarizer = LLMSummarizer()
-    summary = summarizer.summarize_posts(posts)
-    
-    # save and display
-    output_file = summarizer.save_summary(summary, len(posts))
-    
+    summary = summarizer.summarize_posts(posts, tweets, pages)
+    summary += wall_appendix(pages)
+
+    banner = health_banner()
+    if summarizer_dropped := getattr(summarizer, "tweets_dropped", 0):
+        banner += (f'<p><strong>⚠ Corpus trimmed to fit the budget</strong> — the '
+                   f'{summarizer_dropped} lowest-engagement X posts of {len(tweets)} '
+                   f'were left out of the analysis. Raise SUMMARY_COST_CEILING_USD or '
+                   f'prune X_SEED_ACCOUNTS.</p>')
+    if not x_file:
+        banner += (f'<p><strong>⚠ No fresh X data</strong> — {x_why}. '
+                   f'The digest below is Reddit-only.</p>')
+    if not reddit_file:
+        banner += (f'<p><strong>⚠ No fresh Reddit data</strong> — {reddit_why}.</p>')
+
+    output_file = summarizer.save_summary(summary, len(posts),
+                                          tweets_analyzed=len(tweets),
+                                          banner=banner,
+                                          footer=(f" — ${summarizer.last_cost:.3f}"
+                                                  f", {len(readable(pages))} pages read"
+                                                  f", {len(unreadable(pages))} walled"
+                                                  if summarizer.last_cost else ""))
+
     print("\n" + "="*60)
     print(summary)
     print("="*60)
