@@ -48,10 +48,58 @@ All in `config.py`. The ones that move cost or shape:
 - **Fetched pages are untrusted text.** They enter the prompt fenced and labelled
   as data, not instruction.
 
+## the readwise shortlist recommender
+
+A second, independent job: it ranks the Readwise Reader firehose and tags the best
+few `shortlist`, which is the tag behind Reader's own "⭐ Shortlist" view. It has
+its own venv and its own cron slot on purpose -- see `run_shortlist.sh`.
+
+```bash
+uv venv .venv-rec
+uv pip install --python .venv-rec/bin/python fastembed scikit-learn requests python-dotenv pytest pytest-timeout
+./run_shortlist.sh --dry-run     # decides everything, writes nothing
+```
+
+`.env` needs `READWISE_API_KEY` (readwise.io/access_token).
+
+### the cycle
+
+`sync -> embed -> train -> select -> write`, nightly at 02:00 UTC.
+
+| stage | what it does |
+|---|---|
+| sync | `list/?updatedAfter=` deltas into `data/recommender.sqlite3` |
+| embed | bge-small ONNX, **on this box**, nothing sent to an API |
+| train | logistic regression on frozen embeddings, retrained from scratch each run |
+| select | ranks fresh feed items, plus resurfaced slots from the `later` backlog |
+| write | one `bulk_update` adding/removing the `shortlist` tag |
+
+### where the labels come from
+
+Nobody has to sit down and rate a training set. The archive already is one:
+documents that got archived with real reading progress are positives, and stale
+feed items that were never opened are (noisy, down-weighted) negatives. Rating
+tags -- `rate:good` / `rate:bad` -- are the strongest signal and override
+behaviour, but they are a refinement, not a prerequisite.
+
+### two things that are easy to get wrong
+
+- **Age must never be a feature.** Old documents are archived, archived means read,
+  so age predicts the label almost perfectly and yields a model that ranks by "is
+  old" while scoring beautifully. Recency is applied at selection time instead.
+- **One shortlist slot is drawn at random and never scored.** Without it the model
+  only ever sees its own picks and the feedback loop eats itself. It is also the
+  only honest way to answer "is this thing better than chance?" -- compare the open
+  rate on ranked slots against the random one.
+
+The job only ever removes the `shortlist` tag from documents it added itself
+(every add and eviction is logged), so anything shortlisted by hand is left alone.
+
 ## tests
 
 ```bash
 .venv/bin/python -m pytest test_x_ingestion.py --timeout 5
+.venv-rec/bin/python -m pytest test_shortlist.py --timeout 5
 ```
 
 Covers the failure modes: API outage, resume-from-cache, dedupe, the query-length

@@ -10,15 +10,20 @@ whole decision without writing anything.
 """
 
 import argparse
+import os
 import random
 import sys
 from datetime import datetime, timedelta, timezone
 
-import config
-import recommender_embed
-import recommender_model
-from readwise_client import ReadwiseClient
-from recommender_store import Store
+from dotenv import load_dotenv
+
+load_dotenv(os.getenv("DOTENV_PATH") or None)
+
+import config  # noqa: E402
+import recommender_embed  # noqa: E402
+import recommender_model  # noqa: E402
+from readwise_client import ReadwiseClient  # noqa: E402
+from recommender_store import Store  # noqa: E402
 
 
 def log(message):
