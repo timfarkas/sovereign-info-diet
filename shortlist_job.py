@@ -102,33 +102,37 @@ def pick(store, model, taste, now=None, rng=None):
     ]
     later = [d for d in store.documents(location="later") if eligible(d)]
 
-    exploit_slots = config.SHORTLIST_SIZE - config.SHORTLIST_RESURFACE_SLOTS
-    ranked_resurface_slots = config.SHORTLIST_RESURFACE_SLOTS - config.SHORTLIST_RANDOM_SLOTS
+    exploit_slots = (
+        config.SHORTLIST_SIZE
+        - config.SHORTLIST_RESURFACE_SLOTS
+        - config.SHORTLIST_RANDOM_SLOTS
+    )
 
     chosen = []
+    taken = set()
 
     feed_scores = recommender_model.score_documents(feed, embeddings, model, taste)
     for doc in sorted(feed, key=lambda d: -feed_scores.get(d["id"], 0.0))[:exploit_slots]:
         chosen.append((doc, "exploit", feed_scores.get(doc["id"], 0.0)))
+        taken.add(doc["id"])
 
-    # Resurfacing: a random draw from the backlog, then ranked within that draw.
-    # Random first, so the model never gets to look at the whole backlog and keep
-    # picking its own favourites.
+    # The measurement slots: same pool as the exploit picks, drawn uniformly and
+    # never scored. Ranked-vs-random open rate is only meaningful because both
+    # come from this one pool.
+    unranked = [d for d in feed if d["id"] not in taken]
+    for doc in rng.sample(unranked, min(config.SHORTLIST_RANDOM_SLOTS, len(unranked))):
+        chosen.append((doc, "random", None))
+        taken.add(doc["id"])
+
+    # Resurfacing: a random draw from the backlog, then ranked within that draw,
+    # so the model never gets to comb the whole backlog for its own favourites.
     sample = rng.sample(later, min(config.RESURFACE_SAMPLE_SIZE, len(later)))
-    picked_ids = set()
-    if ranked_resurface_slots > 0 and sample:
+    if config.SHORTLIST_RESURFACE_SLOTS > 0 and sample:
         sample_scores = recommender_model.score_documents(sample, embeddings, model, taste)
         for doc in sorted(sample, key=lambda d: -sample_scores.get(d["id"], 0.0))[
-            :ranked_resurface_slots
+            : config.SHORTLIST_RESURFACE_SLOTS
         ]:
             chosen.append((doc, "resurface", sample_scores.get(doc["id"], 0.0)))
-            picked_ids.add(doc["id"])
-
-    # The unbiased slot: drawn at random, never scored. This is what tells us
-    # whether the ranking is doing anything at all.
-    remaining = [d for d in sample if d["id"] not in picked_ids]
-    for doc in rng.sample(remaining, min(config.SHORTLIST_RANDOM_SLOTS, len(remaining))):
-        chosen.append((doc, "random", None))
 
     return chosen
 

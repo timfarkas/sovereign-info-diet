@@ -87,10 +87,19 @@ behaviour, but they are a refinement, not a prerequisite.
 - **Age must never be a feature.** Old documents are archived, archived means read,
   so age predicts the label almost perfectly and yields a model that ranks by "is
   old" while scoring beautifully. Recency is applied at selection time instead.
-- **One shortlist slot is drawn at random and never scored.** Without it the model
-  only ever sees its own picks and the feedback loop eats itself. It is also the
-  only honest way to answer "is this thing better than chance?" -- compare the open
-  rate on ranked slots against the random one.
+- **Two shortlist slots are drawn at random and never scored, from the same pool the
+  ranked picks come from.** Without exploration the model only ever sees its own
+  picks and the feedback loop eats itself. The same-pool part is what makes the
+  comparison mean anything: an earlier version drew the random slot from the `later`
+  backlog while ranking fresh feed, so the two arms differed by age and by having
+  already survived a selection step, and their open rates were never comparable.
+
+Known limits of the offline number, worth keeping in view: labels are derived from
+the corpus *as it stands now*, so a document read yesterday counts as a positive even
+in the training half of an older time split, and a recently arrived item can be
+counted as ignored before it had a fair chance. It measures "would he open this",
+not "was he glad he read it". The live ranked-vs-random comparison is the honest
+metric; the offline one is a smoke test.
 
 The job only ever removes the `shortlist` tag from documents it added itself
 (every add and eviction is logged), so anything shortlisted by hand is left alone.

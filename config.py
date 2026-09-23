@@ -161,14 +161,18 @@ SHORTLIST_TAG = "shortlist"
 RATE_GOOD_TAG = "rate:good"
 RATE_BAD_TAG = "rate:bad"
 
-# Shape of a cycle. SHORTLIST_SIZE total, of which RESURFACE_SLOTS come from the
-# old `later` corpus rather than fresh feed, and RANDOM_SLOTS of those are drawn
-# without ranking at all. That last one is the honest one: it is the unbiased
-# sample that tells us whether the model actually beats chance, and it stops the
-# model from only ever seeing its own picks.
-SHORTLIST_SIZE = 8
-SHORTLIST_RESURFACE_SLOTS = 3
-SHORTLIST_RANDOM_SLOTS = 1
+# Shape of a cycle: SHORTLIST_SIZE total, split three ways.
+#   exploit   -- the model's top picks from fresh feed
+#   random    -- drawn uniformly from THE SAME fresh-feed pool, never scored
+#   resurface -- top of a random draw from the old `later` backlog
+# The random slots must share a pool with the exploit slots or the comparison
+# between them is worthless: items in `later` differ from fresh feed by age and
+# by having already survived a selection step, so their open rates were never
+# comparable. Corrected 2026-09-24 -- an earlier version drew the random slot
+# from `later` and called it unbiased, which it was not.
+SHORTLIST_SIZE = 10
+SHORTLIST_RESURFACE_SLOTS = 2
+SHORTLIST_RANDOM_SLOTS = 2
 RESURFACE_SAMPLE_SIZE = 300    # random draw from `later` that resurfacing ranks
 RESHOW_COOLDOWN_DAYS = 60      # do not wave the same document around again
 FEED_CANDIDATE_DAYS = 7        # how far back a fresh feed item can be and still qualify
