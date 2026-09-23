@@ -272,13 +272,13 @@ def test_prompt_carries_all_three_sources_and_the_weighting():
     assert "arxiv.org/abs/1" in body
 
 
-def test_prompt_forbids_the_ungrammatical_stock_phrase():
-    """It read 'Verification and fidelity are detail not in source'. The phrase
-    is only allowed to appear as the thing the model must NOT write."""
+def test_prompt_never_prescribes_a_fixed_missing_detail_fragment():
+    """It read 'Verification and fidelity are detail not in source' because the
+    prompt told it to paste that exact string. The fragment must appear nowhere
+    at all now, and the instruction must still cover the missing-detail case."""
     from config import SUMMARY_PROMPT_TEMPLATE as T
-    i = T.find("detail not in source")
-    assert i > 0, "the prohibition itself went missing"
-    assert "never as the fixed fragment" in T[:i]
+    assert "detail not in source" not in T
+    assert "state it if it matters" in T
 
 
 def test_prompt_fences_fetched_pages_as_untrusted_data():
@@ -363,40 +363,43 @@ class _Usage:
         self.completion_tokens_details = type("d", (), {"reasoning_tokens": reasoning})
 
 
-def test_cost_is_computed_from_the_pricing_table():
+def test_cost_is_computed_from_the_configured_price():
+    from config import SUMMARY_MODEL_PRICE
     from llm_summarizer import report_cost
-    # gpt-6-sol: $2.00/1M in, $10.00/1M out
-    assert report_cost("gpt-6-sol", _Usage(1_000_000, 100_000)) == pytest.approx(3.0)
+    p_in, _, p_out = SUMMARY_MODEL_PRICE
+    assert report_cost("m", _Usage(1_000_000, 100_000)) \
+        == pytest.approx(p_in + p_out * 0.1)
 
 
 def test_cached_input_is_billed_at_the_cached_rate():
+    from config import SUMMARY_MODEL_PRICE
     from llm_summarizer import report_cost
-    # 1M input of which all cached: $0.20 rather than $2.00
-    assert report_cost("gpt-6-sol", _Usage(1_000_000, 0, cached=1_000_000)) \
-        == pytest.approx(0.2)
+    _, p_cached, _ = SUMMARY_MODEL_PRICE
+    assert report_cost("m", _Usage(1_000_000, 0, cached=1_000_000)) \
+        == pytest.approx(p_cached)
 
 
 def test_over_ceiling_is_flagged_loudly(capsys):
     from llm_summarizer import report_cost
-    report_cost("gpt-6-astra", _Usage(1_000_000, 100_000))   # $15, way over
-    assert "OVER the $0.20/digest ceiling" in capsys.readouterr().out
+    report_cost("m", _Usage(10_000_000, 1_000_000))   # absurd, must trip
+    out = capsys.readouterr().out
+    assert "OVER the $0.25/digest ceiling" in out
 
 
-def test_configured_model_has_a_price_and_fits_the_ceiling_at_realistic_size():
-    """If someone bumps SUMMARY_MODEL to something pricier, this should catch it
-    before the invoice does. Sized on the measured 2026-09-22 run."""
-    from config import MODEL_PRICING, SUMMARY_MODEL, SUMMARY_COST_CEILING_USD
-    assert SUMMARY_MODEL in MODEL_PRICING, f"no price known for {SUMMARY_MODEL}"
-    p_in, _, p_out = MODEL_PRICING[SUMMARY_MODEL]
-    est = (60_000 * p_in + 4_000 * p_out) / 1e6
-    assert est <= SUMMARY_COST_CEILING_USD, f"{SUMMARY_MODEL} ~${est:.3f}/digest"
+def test_configured_price_fits_the_ceiling_at_the_real_corpus_size():
+    """The guard that replaced the pricing table: if the model or the corpus
+    grows past the budget, fail here rather than on the invoice. Sized on the
+    measured full-corpus run (all tweets, 60 reddit posts, 30 linked pages)."""
+    from config import SUMMARY_COST_CEILING_USD, SUMMARY_MODEL_PRICE
+    p_in, _, p_out = SUMMARY_MODEL_PRICE
+    est = (140_000 * p_in + 5_000 * p_out) / 1e6
+    assert est <= SUMMARY_COST_CEILING_USD, f"~${est:.3f}/digest at full corpus"
 
 
-def test_unknown_model_does_not_crash_the_digest(capsys):
-    from llm_summarizer import report_cost
-    import math
-    assert math.isnan(report_cost("gpt-9-whatever", _Usage(10, 10)))
-    assert "no entry in config.MODEL_PRICING" in capsys.readouterr().out
+def test_price_is_three_positive_numbers():
+    from config import SUMMARY_MODEL_PRICE
+    assert len(SUMMARY_MODEL_PRICE) == 3
+    assert all(isinstance(x, (int, float)) and x > 0 for x in SUMMARY_MODEL_PRICE)
 
 
 # --- linked-page enrichment -------------------------------------------------
@@ -602,3 +605,34 @@ def test_case_variant_urls_are_collected_once():
         [{"likes": 5, "retweets": 0,
           "external_links": ["https://X.ai/build", "https://x.ai/Build"]}], [], limit=9)
     assert got == ["https://X.ai/build"]
+
+
+def test_every_fetched_tweet_reaches_the_model():
+    """The regression Tim caught: X_MAX_TWEETS_IN_PROMPT silently dropped the
+    tail of the corpus at the prompt boundary, after we had already paid to
+    fetch it."""
+    from config import X_MAX_TWEETS_IN_PROMPT
+    assert X_MAX_TWEETS_IN_PROMPT is None
+    corpus = [{"id": str(900 - i), "handle": "a", "author_name": "A", "likes": i,
+               "retweets": 0, "created_at": "x", "text": f"TWEET_{i}",
+               "external_links": []} for i in range(900)]
+    body = format_tweets(corpus)
+    assert "TWEET_0" in body and "TWEET_899" in body
+    assert body.count("TWEET_") == 900
+
+
+def test_reddit_and_horizon_are_back_to_the_pre_regression_values():
+    from config import POSTS_TO_ANALYZE, SORT_BY, SUBREDDITS, TIME_HORIZON_DAYS
+    assert POSTS_TO_ANALYZE == 60
+    assert TIME_HORIZON_DAYS >= 2
+    assert SORT_BY == "top"
+    assert "ControlProblem" in SUBREDDITS      # alignment / safety / x-risk
+    assert "AI" not in SUBREDDITS              # r/AI 404s; leaving it in crashes
+
+
+def test_alignment_and_xrisk_are_first_class_priorities():
+    from config import SUMMARY_PROMPT_TEMPLATE as T
+    low = T.lower()
+    for term in ("alignment", "ai safety", "x-risk", "interpretability",
+                 "jailbreak", "existential"):
+        assert term in low, term
