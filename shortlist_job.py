@@ -73,6 +73,21 @@ def _parse(stamp):
     return recommender_model._parse(stamp)
 
 
+def _duplicates(candidate, already, embeddings):
+    """Is this the same thing as something already picked?
+
+    Vectors are L2-normalized, so the dot product is the cosine.
+    """
+    vector = embeddings.get(candidate["id"])
+    if vector is None:
+        return False
+    for other in already:
+        past = embeddings.get(other["id"])
+        if past is not None and float(vector @ past) >= config.DEDUP_SIMILARITY:
+            return True
+    return False
+
+
 def pick(store, model, taste, now=None, rng=None):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...]."""
     now = now or datetime.now(timezone.utc)
@@ -102,39 +117,38 @@ def pick(store, model, taste, now=None, rng=None):
     ]
     later = [d for d in store.documents(location="later") if eligible(d)]
 
-    exploit_slots = (
-        config.SHORTLIST_SIZE
-        - config.SHORTLIST_RESURFACE_SLOTS
-        - config.SHORTLIST_RANDOM_SLOTS
+    def fill(pool, label, total, random_slots):
+        """Rank the pool, take the top few, then draw the rest uniformly from it.
+
+        Both arms come out of the same pool on purpose: that is what makes
+        comparing their open rates a statement about the ranking.
+        """
+        if not pool:
+            return []
+        scores = recommender_model.score_documents(pool, embeddings, model, taste)
+        ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
+        picks = []
+        for candidate in ranked:
+            if len(picks) >= total - random_slots:
+                break
+            if _duplicates(candidate, [d for d, _, _ in picks], embeddings):
+                continue
+            picks.append((candidate, label, scores.get(candidate["id"], 0.0)))
+        taken = {d["id"] for d, _, _ in picks}
+        rest = [d for d in pool if d["id"] not in taken]
+        picks += [
+            (d, f"{label}-random", None)
+            for d in rng.sample(rest, min(random_slots, len(rest)))
+        ]
+        return picks
+
+    # The backlog is sampled before it is ranked, so the model never gets to comb
+    # all of `later` for its own favourites -- it only ranks within a random draw.
+    backlog = rng.sample(later, min(config.RESURFACE_SAMPLE_SIZE, len(later)))
+
+    return fill(feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS) + fill(
+        backlog, "later", config.LATER_SLOTS, config.LATER_RANDOM_SLOTS
     )
-
-    chosen = []
-    taken = set()
-
-    feed_scores = recommender_model.score_documents(feed, embeddings, model, taste)
-    for doc in sorted(feed, key=lambda d: -feed_scores.get(d["id"], 0.0))[:exploit_slots]:
-        chosen.append((doc, "exploit", feed_scores.get(doc["id"], 0.0)))
-        taken.add(doc["id"])
-
-    # The measurement slots: same pool as the exploit picks, drawn uniformly and
-    # never scored. Ranked-vs-random open rate is only meaningful because both
-    # come from this one pool.
-    unranked = [d for d in feed if d["id"] not in taken]
-    for doc in rng.sample(unranked, min(config.SHORTLIST_RANDOM_SLOTS, len(unranked))):
-        chosen.append((doc, "random", None))
-        taken.add(doc["id"])
-
-    # Resurfacing: a random draw from the backlog, then ranked within that draw,
-    # so the model never gets to comb the whole backlog for its own favourites.
-    sample = rng.sample(later, min(config.RESURFACE_SAMPLE_SIZE, len(later)))
-    if config.SHORTLIST_RESURFACE_SLOTS > 0 and sample:
-        sample_scores = recommender_model.score_documents(sample, embeddings, model, taste)
-        for doc in sorted(sample, key=lambda d: -sample_scores.get(d["id"], 0.0))[
-            : config.SHORTLIST_RESURFACE_SLOTS
-        ]:
-            chosen.append((doc, "resurface", sample_scores.get(doc["id"], 0.0)))
-
-    return chosen
 
 
 def evictable(store):

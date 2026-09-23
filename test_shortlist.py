@@ -55,11 +55,14 @@ def store(tmp_path):
 def stock(store, documents, embed=True):
     store.upsert_documents(documents)
     if embed:
+        # Centred and normalized, like real embeddings -- uniform [0,1) vectors
+        # all sit in one orthant and read as near-duplicates of each other.
         rng = np.random.default_rng(0)
-        store.save_embeddings(
-            config.EMBED_KEY,
-            {d["id"]: rng.random(config.EMBED_DIM, dtype=np.float32) for d in documents},
-        )
+        vectors = {}
+        for d in documents:
+            v = rng.standard_normal(config.EMBED_DIM).astype(np.float32)
+            vectors[d["id"]] = v / np.linalg.norm(v)
+        store.save_embeddings(config.EMBED_KEY, vectors)
 
 
 # -- fake transport ----------------------------------------------------------
@@ -262,7 +265,7 @@ def test_pick_respects_the_reshow_cooldown(store):
     assert "f0" not in {d["id"] for d, _, _ in chosen}
 
 
-def test_pick_fills_exploit_and_resurface_and_random_slots(store):
+def test_pick_fills_both_pools_with_their_own_random_arm(store):
     stock(
         store,
         [doc(f"f{i}") for i in range(20)]
@@ -271,38 +274,37 @@ def test_pick_fills_exploit_and_resurface_and_random_slots(store):
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     slots = [slot for _, slot, _ in chosen]
     assert len(chosen) == config.SHORTLIST_SIZE
-    assert slots.count("random") == config.SHORTLIST_RANDOM_SLOTS
-    assert slots.count("resurface") == config.SHORTLIST_RESURFACE_SLOTS
-    assert slots.count("exploit") == (
-        config.SHORTLIST_SIZE
-        - config.SHORTLIST_RESURFACE_SLOTS
-        - config.SHORTLIST_RANDOM_SLOTS
-    )
+    assert slots.count("feed") == config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
+    assert slots.count("feed-random") == config.FEED_RANDOM_SLOTS
+    assert slots.count("later") == config.LATER_SLOTS - config.LATER_RANDOM_SLOTS
+    assert slots.count("later-random") == config.LATER_RANDOM_SLOTS
 
 
-def test_the_random_slot_is_never_scored(store):
-    """It is the measurement arm -- ranking it would defeat the whole point."""
+def test_the_random_slots_are_never_scored(store):
+    """They are the measurement arms -- ranking them defeats the whole point."""
     stock(
         store,
         [doc(f"f{i}") for i in range(20)]
         + [doc(f"l{i}", location="later") for i in range(20)],
     )
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
-    assert all(score is None for _, slot, score in chosen if slot == "random")
+    assert all(score is None for _, slot, score in chosen if slot.endswith("-random"))
 
 
-def test_random_slots_are_drawn_from_the_same_pool_as_the_ranked_ones(store):
-    """Otherwise ranked-vs-random open rate compares two different populations
-    and measures age and prior selection rather than the ranking."""
+def test_each_random_arm_is_drawn_from_its_own_pool(store):
+    """Comparing a random draw from `later` against ranked picks from `feed` would
+    measure age and prior selection, not the quality of the ranking."""
     stock(
         store,
         [doc(f"f{i}") for i in range(20)]
         + [doc(f"l{i}", location="later", saved_at=iso(400)) for i in range(20)],
     )
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
-    random_ids = {d["id"] for d, slot, _ in chosen if slot == "random"}
-    assert random_ids
-    assert all(i.startswith("f") for i in random_ids)
+    by_slot = {slot: {d["id"] for d, s, _ in chosen if s == slot} for slot in
+               ("feed", "feed-random", "later", "later-random")}
+    assert all(i.startswith("f") for i in by_slot["feed"] | by_slot["feed-random"])
+    assert all(i.startswith("l") for i in by_slot["later"] | by_slot["later-random"])
+    assert by_slot["feed-random"] and by_slot["later-random"]
 
 
 def test_no_document_takes_two_slots_at_once(store):
@@ -310,6 +312,32 @@ def test_no_document_takes_two_slots_at_once(store):
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     ids = [d["id"] for d, _, _ in chosen]
     assert len(ids) == len(set(ids))
+
+
+def test_ranked_picks_skip_near_duplicates(store):
+    """The first live dry run returned three copies of one newsletter."""
+    store.upsert_documents([doc(f"dupe{i}") for i in range(6)] + [doc("other")])
+    same = np.ones(config.EMBED_DIM, dtype=np.float32)
+    same /= np.linalg.norm(same)
+    different = np.zeros(config.EMBED_DIM, dtype=np.float32)
+    different[0] = 1.0
+    vectors = {f"dupe{i}": same for i in range(6)}
+    vectors["other"] = different
+    store.save_embeddings(config.EMBED_KEY, vectors)
+
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW)
+    ranked = [d["id"] for d, slot, _ in chosen if slot == "feed"]
+    assert len([i for i in ranked if i.startswith("dupe")]) == 1
+
+
+def test_the_random_arm_is_not_deduplicated(store):
+    """Skipping duplicates there would stop it being a uniform draw."""
+    store.upsert_documents([doc(f"dupe{i}") for i in range(4)])
+    same = np.ones(config.EMBED_DIM, dtype=np.float32)
+    same /= np.linalg.norm(same)
+    store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(4)})
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW)
+    assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == 1
 
 
 def test_pick_skips_stale_feed_items(store):

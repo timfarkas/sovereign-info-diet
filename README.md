@@ -87,12 +87,12 @@ behaviour, but they are a refinement, not a prerequisite.
 - **Age must never be a feature.** Old documents are archived, archived means read,
   so age predicts the label almost perfectly and yields a model that ranks by "is
   old" while scoring beautifully. Recency is applied at selection time instead.
-- **Two shortlist slots are drawn at random and never scored, from the same pool the
-  ranked picks come from.** Without exploration the model only ever sees its own
-  picks and the feedback loop eats itself. The same-pool part is what makes the
-  comparison mean anything: an earlier version drew the random slot from the `later`
-  backlog while ranking fresh feed, so the two arms differed by age and by having
-  already survived a selection step, and their open rates were never comparable.
+- **Ten slots: 7 from fresh feed, 3 resurfaced from the backlog, and one unranked
+  random pick inside each of those two groups.** Without exploration the model only
+  ever sees its own picks and the feedback loop eats itself. Each random arm is drawn
+  from the *same* pool as the ranked picks it will be compared against -- `later`
+  items differ from fresh feed by age and by having already survived a selection
+  step, so a random draw from one pool says nothing about ranking in the other.
 
 Known limits of the offline number, worth keeping in view: labels are derived from
 the corpus *as it stands now*, so a document read yesterday counts as a positive even

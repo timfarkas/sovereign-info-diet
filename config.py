@@ -161,19 +161,25 @@ SHORTLIST_TAG = "shortlist"
 RATE_GOOD_TAG = "rate:good"
 RATE_BAD_TAG = "rate:bad"
 
-# Shape of a cycle: SHORTLIST_SIZE total, split three ways.
-#   exploit   -- the model's top picks from fresh feed
-#   random    -- drawn uniformly from THE SAME fresh-feed pool, never scored
-#   resurface -- top of a random draw from the old `later` backlog
-# The random slots must share a pool with the exploit slots or the comparison
-# between them is worthless: items in `later` differ from fresh feed by age and
-# by having already survived a selection step, so their open rates were never
-# comparable. Corrected 2026-09-24 -- an earlier version drew the random slot
-# from `later` and called it unbiased, which it was not.
-SHORTLIST_SIZE = 10
-SHORTLIST_RESURFACE_SLOTS = 2
-SHORTLIST_RANDOM_SLOTS = 2
+# Shape of a cycle: two pools, each with its own unranked random pick.
+#   feed  -- 7 slots from the fresh firehose, 1 of them random
+#   later -- 3 slots resurfaced from the backlog, 1 of them random
+# The random pick in each pool is the measurement arm, and it has to come from
+# the SAME pool as the ranked picks it is compared against: `later` items differ
+# from fresh feed by age and by having already survived a selection step, so a
+# random draw from one pool says nothing about ranking in the other.
+FEED_SLOTS = 7
+FEED_RANDOM_SLOTS = 1
+LATER_SLOTS = 3
+LATER_RANDOM_SLOTS = 1
+SHORTLIST_SIZE = FEED_SLOTS + LATER_SLOTS
 RESURFACE_SAMPLE_SIZE = 300    # random draw from `later` that resurfacing ranks
+# Near-duplicates are not hypothetical: the first dry run handed back three
+# copies of the same newsletter, eating half the ranked slots. Cosine on the
+# embeddings catches both exact repeats and the same story from two sources.
+# Only ranked picks are deduplicated -- a random arm that skipped duplicates
+# would no longer be a uniform draw, and it is the measurement.
+DEDUP_SIMILARITY = 0.93
 RESHOW_COOLDOWN_DAYS = 60      # do not wave the same document around again
 FEED_CANDIDATE_DAYS = 7        # how far back a fresh feed item can be and still qualify
 
