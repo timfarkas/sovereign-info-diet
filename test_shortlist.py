@@ -57,7 +57,7 @@ def stock(store, documents, embed=True):
     if embed:
         rng = np.random.default_rng(0)
         store.save_embeddings(
-            config.EMBED_MODEL,
+            config.EMBED_KEY,
             {d["id"]: rng.random(config.EMBED_DIM, dtype=np.float32) for d in documents},
         )
 
@@ -141,15 +141,15 @@ def test_tag_names_handles_both_shapes_the_api_uses():
 
 def test_documents_and_embeddings_survive_a_round_trip(store):
     stock(store, [doc("a", tags={"favorite": {}})], embed=False)
-    store.save_embeddings(config.EMBED_MODEL, {"a": np.arange(4, dtype=np.float32)})
+    store.save_embeddings(config.EMBED_KEY, {"a": np.arange(4, dtype=np.float32)})
     assert json.loads(store.document("a")["tags"]) == ["favorite"]
-    assert list(store.embeddings(config.EMBED_MODEL)["a"]) == [0.0, 1.0, 2.0, 3.0]
+    assert list(store.embeddings(config.EMBED_KEY)["a"]) == [0.0, 1.0, 2.0, 3.0]
 
 
 def test_missing_embeddings_only_lists_what_is_actually_missing(store):
     stock(store, [doc("a"), doc("b")], embed=False)
-    store.save_embeddings(config.EMBED_MODEL, {"a": np.zeros(4, dtype=np.float32)})
-    assert [d["id"] for d in store.missing_embeddings(config.EMBED_MODEL)] == ["b"]
+    store.save_embeddings(config.EMBED_KEY, {"a": np.zeros(4, dtype=np.float32)})
+    assert [d["id"] for d in store.missing_embeddings(config.EMBED_KEY)] == ["b"]
 
 
 # -- labels ------------------------------------------------------------------
@@ -203,6 +203,31 @@ def test_derive_labels_uses_the_eviction_log(store):
     store.log_event("a", "added", "2026-09-20")
     store.log_event("a", "evicted", "2026-09-21")
     assert recommender_model.derive_labels(store, now=NOW)["a"][0] == 0
+
+
+# -- what gets embedded ------------------------------------------------------
+
+
+def test_the_embedded_text_carries_author_and_publication():
+    """Both recur constantly in this corpus and carry a lot of the signal."""
+    import recommender_embed
+
+    text = recommender_embed.document_text(
+        doc("a", title="On Stuff", author="Zvi Mowshowitz", site_name="lesswrong.com")
+    )
+    assert "Zvi Mowshowitz" in text
+    assert "lesswrong.com" in text
+    assert "On Stuff" in text
+
+
+def test_a_superseded_text_recipe_does_not_linger_in_the_store(store):
+    """After a version bump, anything still on the old recipe is stale, not usable."""
+    stock(store, [doc("a"), doc("b")], embed=False)
+    store.save_embeddings("old-recipe", {"a": np.zeros(4, dtype=np.float32)})
+    store.save_embeddings(config.EMBED_KEY, {"b": np.zeros(4, dtype=np.float32)})
+    assert [d["id"] for d in store.missing_embeddings(config.EMBED_KEY)] == ["a"]
+    assert store.forget_other_embeddings(config.EMBED_KEY) == 1
+    assert list(store.embeddings(config.EMBED_KEY)) == ["b"]
 
 
 # -- features ----------------------------------------------------------------

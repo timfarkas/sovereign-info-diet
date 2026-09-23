@@ -49,7 +49,7 @@ def sync(store, client, full=False):
 
 
 def embed_missing(store, limit=None):
-    pending = store.missing_embeddings(config.EMBED_MODEL)
+    pending = store.missing_embeddings(config.EMBED_KEY)
     if limit:
         pending = pending[:limit]
     if not pending:
@@ -60,9 +60,12 @@ def embed_missing(store, limit=None):
     for start in range(0, len(pending), 200):
         chunk = pending[start : start + 200]
         vectors = recommender_embed.embed_documents(chunk)
-        store.save_embeddings(config.EMBED_MODEL, vectors)
+        store.save_embeddings(config.EMBED_KEY, vectors)
         done += len(vectors)
         log(f"  {done}/{len(pending)}")
+    dropped = store.forget_other_embeddings(config.EMBED_KEY)
+    if dropped:
+        log(f"dropped {dropped} vectors from a superseded text recipe")
     return done
 
 
@@ -74,7 +77,7 @@ def pick(store, model, taste, now=None, rng=None):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...]."""
     now = now or datetime.now(timezone.utc)
     rng = rng or random.Random()
-    embeddings = store.embeddings(config.EMBED_MODEL)
+    embeddings = store.embeddings(config.EMBED_KEY)
     shown = store.last_shown()
     cooldown = now - timedelta(days=config.RESHOW_COOLDOWN_DAYS)
 

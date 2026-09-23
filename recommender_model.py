@@ -120,7 +120,7 @@ def build_matrix(docs, embeddings):
 def train(store, now=None):
     """Fit on everything labelled. Returns (model, stats) or (None, stats)."""
     labels = derive_labels(store, now=now)
-    embeddings = store.embeddings(config.EMBED_MODEL)
+    embeddings = store.embeddings(config.EMBED_KEY)
     docs = [d for d in store.documents() if d["id"] in labels]
     X, kept = build_matrix(docs, embeddings)
     y = np.array([labels[d["id"]][0] for d in kept])
@@ -148,7 +148,7 @@ def _count_reasons(labels):
 def taste_vector(store):
     """Cold-start fallback: the mean embedding of what he has actually read."""
     labels = derive_labels(store)
-    embeddings = store.embeddings(config.EMBED_MODEL)
+    embeddings = store.embeddings(config.EMBED_KEY)
     positives = [
         embeddings[doc_id]
         for doc_id, (y, _, _) in labels.items()
@@ -187,7 +187,7 @@ def evaluate(store, holdout_days=30, now=None):
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=holdout_days)
     labels = derive_labels(store, now=now)
-    embeddings = store.embeddings(config.EMBED_MODEL)
+    embeddings = store.embeddings(config.EMBED_KEY)
     docs = [d for d in store.documents() if d["id"] in labels]
 
     train_docs, test_docs = [], []

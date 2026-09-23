@@ -145,6 +145,12 @@ class Store:
         )
         self.conn.commit()
 
+    def forget_other_embeddings(self, model):
+        """Drop vectors from superseded text recipes, so the file stops growing."""
+        cursor = self.conn.execute("DELETE FROM embeddings WHERE model != ?", (model,))
+        self.conn.commit()
+        return cursor.rowcount
+
     def embeddings(self, model):
         out = {}
         for row in self.conn.execute(

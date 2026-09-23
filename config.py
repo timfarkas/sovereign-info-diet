@@ -142,10 +142,17 @@ RECOMMENDER_DB = "/home/kyro/projects/ai-news/data/recommender.sqlite3"
 # /tmp gets cleared and re-downloading the model on every boot is silly.
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_DIM = 384
+# Bump whenever document_text() changes what goes into the vector. Stored
+# embeddings are keyed by model+version, so a recipe change re-embeds from
+# scratch instead of silently mixing two different embedding spaces.
+#   v1: title, site, summary
+#   v2: + author -- publications and authors repeat constantly in this corpus
+EMBED_TEXT_VERSION = 2
 EMBED_THREADS = 1
 EMBED_BATCH_SIZE = 16
 EMBED_CACHE_DIR = "/home/kyro/projects/ai-news/.model-cache"
 EMBED_SUMMARY_CHARS = 1000     # summaries are short; this is a guard, not a budget
+EMBED_KEY = f"{EMBED_MODEL}#v{EMBED_TEXT_VERSION}"   # how embeddings are keyed in the store
 
 # Tags. `shortlist` is Reader's own -- verified 2026-09-23 by shortlisting a
 # document by hand and reading the tag back off the API. The rating tags are

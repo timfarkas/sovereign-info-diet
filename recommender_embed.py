@@ -34,14 +34,18 @@ def _load():
 
 
 def document_text(doc):
-    """What we actually embed: title, where it came from, and the summary.
+    """What we actually embed: title, who wrote it, where it came from, summary.
 
-    The site name goes in on purpose -- it lets the linear head learn that some
-    sources are reliably worth the reader's time without a separate leaky
-    per-source feature computed from the labels.
+    Author and site name go in on purpose -- a handful of authors and
+    publications recur constantly in this corpus and carry a lot of the signal,
+    and putting them in the text lets the linear head learn that without a
+    separate per-source feature computed from the labels, which would leak.
+
+    Changing anything here means bumping config.EMBED_TEXT_VERSION.
     """
     parts = [
         doc.get("title") or "",
+        doc.get("author") or "",
         doc.get("site_name") or doc.get("source") or "",
         (doc.get("summary") or "")[: config.EMBED_SUMMARY_CHARS],
     ]
