@@ -249,7 +249,7 @@ class XScraper:
         return batches
 
     def fetch_batch(self, batch: List[str], since_date: str,
-                    max_pages: int = 5) -> List[Dict[str, Any]]:
+                    max_pages: int = 50) -> List[Dict[str, Any]]:
         tweets, cursor = [], ""
         for _ in range(max_pages):
             d = self.client.get("/twitter/tweet/advanced_search",
@@ -275,8 +275,9 @@ class XScraper:
     # --- the run --------------------------------------------------------
     def scrape(self, seeds: List[str], since_days: int = 1,
                max_query_chars: int = 400, max_accounts_per_batch: int = 20,
-               max_tweets: int = 1500, max_accounts: int = None,
-               ttl_days: int = 7, run_id: str = None) -> List[Dict[str, Any]]:
+               max_tweets: int = 8000, max_pages_per_batch: int = 50,
+               max_accounts: int = None, ttl_days: int = 7,
+               run_id: str = None) -> List[Dict[str, Any]]:
         """One ingestion run. Resumable, deduped, and always writes health."""
         run_id = run_id or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         run_dir = self.state_dir / run_id
@@ -305,7 +306,8 @@ class XScraper:
                 break
             attempted += 1
             try:
-                got = self.fetch_batch(batch, since_date)
+                got = self.fetch_batch(batch, since_date,
+                                       max_pages=max_pages_per_batch)
             except XFeedDown as e:
                 failed += 1
                 print(f"  [x] batch {n} FAILED (kept going): {e}")
@@ -378,7 +380,7 @@ class XScraper:
 
 def main() -> int:
     from config import (X_SEED_ACCOUNTS, X_MAX_QUERY_CHARS, X_MAX_ACCOUNTS_PER_BATCH,
-                        X_MAX_TWEETS_PER_RUN, X_MAX_ACCOUNTS,
+                        X_MAX_TWEETS_PER_RUN, X_MAX_PAGES_PER_BATCH, X_MAX_ACCOUNTS,
                         X_ACCOUNT_LIST_TTL_DAYS, TIME_HORIZON_DAYS)
     print("=== X ingestion (twitterapi.io) ===")
     scraper = XScraper()
@@ -390,6 +392,7 @@ def main() -> int:
             max_query_chars=X_MAX_QUERY_CHARS,
             max_accounts_per_batch=X_MAX_ACCOUNTS_PER_BATCH,
             max_tweets=X_MAX_TWEETS_PER_RUN,
+            max_pages_per_batch=X_MAX_PAGES_PER_BATCH,
             max_accounts=X_MAX_ACCOUNTS, ttl_days=X_ACCOUNT_LIST_TTL_DAYS)
     except XFeedDown as e:
         # health file is written by scrape() for partial failures; for a total

@@ -106,24 +106,21 @@ def report_cost(model: str, usage) -> float:
     Tim set the budget per digest, so the digest should say what it cost rather
     than leaving him to reconstruct it from an invoice a month later.
     """
-    from config import MODEL_PRICING, SUMMARY_COST_CEILING_USD
+    from config import (SUMMARY_COST_CEILING_USD, SUMMARY_MODEL_PRICE,
+                        SUMMARY_SERVICE_TIER)
     inp = getattr(usage, "prompt_tokens", 0) or 0
     out = getattr(usage, "completion_tokens", 0) or 0
     cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
     reasoning = getattr(getattr(usage, "completion_tokens_details", None),
                         "reasoning_tokens", 0) or 0
-    if model not in MODEL_PRICING:
-        print(f"Cost: unknown -- {model} has no entry in config.MODEL_PRICING "
-              f"({inp} in / {out} out tokens)")
-        return float("nan")
-    p_in, p_cached, p_out = MODEL_PRICING[model]
+    p_in, p_cached, p_out = SUMMARY_MODEL_PRICE
     cost = ((inp - cached) * p_in + cached * p_cached + out * p_out) / 1e6
-    print(f"Cost: ${cost:.4f} on {model} "
+    print(f"Cost: ${cost:.4f} on {model} ({SUMMARY_SERVICE_TIER} tier) "
           f"({inp} input [{cached} cached] / {out} output [{reasoning} reasoning] tokens)")
     if cost > SUMMARY_COST_CEILING_USD:
         print(f"⚠ OVER the ${SUMMARY_COST_CEILING_USD:.2f}/digest ceiling by "
-              f"${cost - SUMMARY_COST_CEILING_USD:.4f} -- consider a cheaper model "
-              f"or a smaller X_MAX_TWEETS_IN_PROMPT")
+              f"${cost - SUMMARY_COST_CEILING_USD:.4f} -- drop to gpt-6-luna, or trim "
+              f"LINK_FETCH_MAX_PAGES / LINK_FETCH_MAX_CHARS")
     return cost
 
 
@@ -194,27 +191,29 @@ class LLMSummarizer:
         prompt = self.create_summary_prompt(posts, tweets, pages)
         print(f"Prompt is {len(prompt):,} chars")
         
+        from config import SUMMARY_SERVICE_TIER
+        messages = [
+            {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
+            {"role": "user", "content": prompt},
+        ]
+        # reasoning models reject temperature / max_tokens
+        extra = ({} if self.model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+                 else {"temperature": 0.7, "max_tokens": 1500})
+
+        def call(tier):
+            return self.client.chat.completions.create(
+                model=self.model, messages=messages, service_tier=tier, **extra)
+
         try:
-            # GPT-5 has different parameter requirements
-            if self.model.startswith(('gpt-5', 'gpt-6', 'o1', 'o3', 'o4')):
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
-                        {"role": "user", "content": prompt}
-                    ]
-                    # reasoning models reject temperature / max_tokens
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1500
-                )
+            try:
+                response = call(SUMMARY_SERVICE_TIER)
+            except Exception as e:
+                if SUMMARY_SERVICE_TIER == "default":
+                    raise
+                # flex trades capacity for price; falling back beats no digest
+                print(f"[{SUMMARY_SERVICE_TIER} tier unavailable: {e} -- "
+                      f"retrying on standard tier at full price]")
+                response = call("default")
             summary = strip_blocked_links(response.choices[0].message.content.strip())
             self.last_cost = report_cost(self.model, response.usage)
 

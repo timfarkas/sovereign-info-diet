@@ -2,12 +2,12 @@
 
 # Configuration for the digital info filter
 
-TIME_HORIZON_DAYS = 1  # look back this many days
-POSTS_TO_ANALYZE = 30  # number of posts to scrape for analysis
+TIME_HORIZON_DAYS = 2   # look back this many days
+POSTS_TO_ANALYZE = 60   # reddit posts to scrape for analysis
 
 SUMMARY_PROMPT_TEMPLATE = """You are an expert AI/tech analyst writing for an extremely informed reader who values novelty, specificity, and signal over noise.
 You will read (a) posts from X/Twitter accounts the reader personally follows and (b) posts from AI subreddits, both from the past {TIME_HORIZON_DAYS} days, and produce one combined digest that filters for the highest-value insights.
-Do NOT add facts that are not in the provided material. If something is missing (metrics, authors, dates), say so in a NORMAL ENGLISH CLAUSE that agrees with its subject -- "the post does not give the score", "neither source states the release date", "the paper is behind a paywall" -- and never as the fixed fragment "detail not in source", which produces ungrammatical sentences like "Verification and fidelity are detail not in source". Vary the wording to fit the sentence. Absence of a detail is usually not worth a sentence at all: prefer omitting it to announcing it, and only flag a gap when the missing number is the whole point.
+Do NOT add facts that are not in the provided material. If something is missing, state it if it matters and omit it if it does not -- in a normal clause that agrees with its subject, never as a fixed fragment.
 
 **Organise by TOPIC, not by source.** This is the most important instruction about structure. Major Developments is a list of topics; each topic gets a short heading and then bullets, and the bullets under one topic MIX X posts and Reddit posts freely wherever they are about the same thing. A single X announcement and the Reddit thread reacting to it belong under the same heading, next to each other. Never create a section or subsection that exists only because of where a post came from.
 
@@ -15,6 +15,7 @@ Do NOT add facts that are not in the provided material. If something is missing 
 
 **Your priorities:**
 1. **Major developments** — grouped into topics. Only include things that plausibly shift the pareto frontier: new SOTA results, architecture innovations, notable open-source/model releases, or empirical results that overturn prior assumptions. Within a topic: name the source, describe what changed, explain why it matters.
+   **Alignment, AI safety and x-risk count as major developments, not as commentary.** Give the same weight to: interpretability and evals results, alignment/control techniques and their failures, jailbreaks and misuse demonstrations, model-spec and safety-policy changes at the labs, governance and regulation with teeth, and any serious argument or evidence about catastrophic or existential risk. A concrete safety result outranks a routine capability release. Where a capability item has a safety dimension, say so in that topic rather than splitting it off.
 2. **Sentiment shifts** — real changes in expert or community mood about AI companies, AGI timelines, regulation, or safety. Quote verbatim where possible. Mix sources here too.
 3. **Absurd/funny** — one or two genuinely bizarre or culturally revealing AI moments. Not typical hype or doom.
 
@@ -77,24 +78,18 @@ Not every link could be fetched. **A page I could not read is still a link worth
 {posts_content}
 """
 
-# Model for the digest. gpt-6-astra is the better model but costs ~$0.55/run at
-# this prompt size ($10/1M in, $50/1M out) -- 3x over the ~$0.20 ceiling. Sol is
-# the best one that fits. Verify with the measured cost line the summarizer prints.
+# Model for the digest. gpt-6-sol on the flex service tier: measured at well
+# under $0.20/digest on standard tier before the corpus grew, and flex is half
+# price for the same model -- we are a 01:00 cron, so latency costs us nothing.
+# gpt-6-astra is the better model but ~4x the ceiling at this prompt size.
 SUMMARY_MODEL = "gpt-6-sol"
+SUMMARY_SERVICE_TIER = "flex"     # "flex" = half price, slower. "default" = standard.
 
-# $ per 1M tokens, standard tier, for the cost line. Keep in sync with
-# developers.openai.com/api/docs/pricing -- these drift.
-MODEL_PRICING = {
-    "gpt-6-astra":  (10.00, 1.00, 50.00),
-    "gpt-6-sol":    (2.00,  0.20, 10.00),
-    "gpt-6-luna":   (0.10,  0.01, 0.50),
-    "gpt-5.6-sol":  (4.00,  0.40, 20.00),
-    "gpt-5.6-terra": (2.00, 0.20, 12.00),
-    "gpt-5.6-luna": (0.20,  0.02, 1.20),
-    "gpt-5.5":      (5.00,  0.50, 30.00),
-    "gpt-5-mini":   (0.25,  0.025, 2.00),
-}
-SUMMARY_COST_CEILING_USD = 0.20   # what Tim asked for; exceeding it prints a warning
+# $ per 1M tokens (input, cached input, output) for SUMMARY_MODEL on the tier
+# above, so the run can print what it actually cost. Two numbers for the one
+# model we use, not a table of every model -- re-check when you change either.
+SUMMARY_MODEL_PRICE = (1.00, 0.10, 5.00)
+SUMMARY_COST_CEILING_USD = 0.25   # exceeding it prints a warning
 
 # --- linked-page enrichment --------------------------------------------------
 # Fetch the pages posts point at so the summarizer can read the source instead
@@ -109,17 +104,24 @@ REDDIT_COMMENT_CHARS = 500         # was 150
 
 # --- X/Twitter ingestion (via twitterapi.io) ---------------------------------
 # The account universe is the union of whoever these accounts follow.
-X_SEED_ACCOUNTS = ["FarkasTim", "IsaakFreeman"]
+X_SEED_ACCOUNTS = ["FarkasTim", "IsaakFreeman", "johannes_hage"]
 X_ACCOUNT_LIST_TTL_DAYS = 7      # following lists move slowly; don't re-pay daily
 # X search silently returns nothing for queries past ~500 chars (measured
 # 2026-09-22: 466 chars fine, 514 chars -> 0 results for accounts that posted).
 # So batches are packed by query length with headroom, not by account count.
 X_MAX_QUERY_CHARS = 400
 X_MAX_ACCOUNTS_PER_BATCH = 20
-X_MAX_TWEETS_PER_RUN = 1500      # cost guard: ~15 credits/tweet on twitterapi.io
+# Circuit breakers, not budgets: we want EVERY post from the account list, and
+# pagination stops on its own when a batch is exhausted. These only exist so a
+# runaway loop cannot spend unbounded twitterapi.io credit (~15 credits/tweet).
+X_MAX_TWEETS_PER_RUN = 8000
+X_MAX_PAGES_PER_BATCH = 50       # 20 tweets/page, so 1000 tweets per batch
 X_MAX_ACCOUNTS = None            # None = all of them
-X_MAX_TWEETS_IN_PROMPT = 400     # context guard for the summarizer
+X_MAX_TWEETS_IN_PROMPT = None    # None = every tweet we fetched reaches the model
 
-SUBREDDITS = ["singularity", "DeepLearning", "MachineLearning", "LocalLLaMA"]  # multiple subreddits for better coverage
+# r/ControlProblem added for the alignment/safety/x-risk half of the brief.
+# r/AI is NOT here on purpose: it 404s, which is why an earlier commit dropped it.
+SUBREDDITS = ["singularity", "DeepLearning", "MachineLearning", "LocalLLaMA",
+              "ControlProblem"]
 
-SORT_BY = "hot"  # "hot", "new", or "top" - top gets best posts from time period
+SORT_BY = "top"  # "hot", "new", or "top" - top gets best posts from the period
