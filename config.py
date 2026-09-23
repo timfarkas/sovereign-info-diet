@@ -127,3 +127,55 @@ SUBREDDITS = ["singularity", "DeepLearning", "MachineLearning", "LocalLLaMA",
               "ControlProblem"]
 
 SORT_BY = "top"  # "hot", "new", or "top" - top gets best posts from the period
+
+
+# --- Readwise shortlist recommender ------------------------------------------
+# Ranks the Readwise Reader firehose and tags the best few `shortlist`, which is
+# the tag behind Reader's built-in "Shortlist" view. Everything else is left
+# alone, so a bad ranking costs the reader nothing but a mediocre shortlist.
+
+RECOMMENDER_DB = "/home/kyro/projects/ai-news/data/recommender.sqlite3"
+
+# Local ONNX embeddings. Measured 2026-09-23: onnxruntime with default threads
+# and batch size OOM'd this 3.7 GB box while the digest cron was resident, so
+# these defaults are small on purpose. The cache dir is NOT under /tmp because
+# /tmp gets cleared and re-downloading the model on every boot is silly.
+EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+EMBED_DIM = 384
+EMBED_THREADS = 1
+EMBED_BATCH_SIZE = 16
+EMBED_CACHE_DIR = "/home/kyro/projects/ai-news/.model-cache"
+EMBED_SUMMARY_CHARS = 1000     # summaries are short; this is a guard, not a budget
+
+# Tags. `shortlist` is Reader's own -- verified 2026-09-23 by shortlisting a
+# document by hand and reading the tag back off the API. The rating tags are
+# ours, and deliberately binary: a scale invites agonising over the middle.
+SHORTLIST_TAG = "shortlist"
+RATE_GOOD_TAG = "rate:good"
+RATE_BAD_TAG = "rate:bad"
+
+# Shape of a cycle. SHORTLIST_SIZE total, of which RESURFACE_SLOTS come from the
+# old `later` corpus rather than fresh feed, and RANDOM_SLOTS of those are drawn
+# without ranking at all. That last one is the honest one: it is the unbiased
+# sample that tells us whether the model actually beats chance, and it stops the
+# model from only ever seeing its own picks.
+SHORTLIST_SIZE = 8
+SHORTLIST_RESURFACE_SLOTS = 3
+SHORTLIST_RANDOM_SLOTS = 1
+RESURFACE_SAMPLE_SIZE = 300    # random draw from `later` that resurfacing ranks
+RESHOW_COOLDOWN_DAYS = 60      # do not wave the same document around again
+FEED_CANDIDATE_DAYS = 7        # how far back a fresh feed item can be and still qualify
+
+# Labelling. A feed item this old that was never opened counts as a weak
+# negative -- weak because not opening something mostly means the firehose
+# outran the reader, not that he disliked it.
+FEED_STALE_DAYS = 4
+LABEL_WEIGHTS = {
+    "rated": 3.0,          # he tagged it rate:good / rate:bad
+    "favorited": 2.0,      # favorite / important
+    "read": 1.5,           # archived with real reading progress
+    "opened": 1.0,         # opened but not finished
+    "passed": 1.0,         # shortlisted, shown, evicted unopened
+    "ignored": 0.3,        # stale feed item, never opened
+}
+MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold start
