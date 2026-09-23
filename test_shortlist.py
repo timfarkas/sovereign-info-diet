@@ -165,7 +165,7 @@ def test_missing_embeddings_only_lists_what_is_actually_missing(store):
         ({"tags": {config.RATE_BAD_TAG: {}}}, (0, "rated")),
         ({"tags": {"favorite": {}}}, (1, "favorited")),
         ({"location": "archive", "reading_progress": 0.9}, (1, "read")),
-        ({"first_opened_at": iso(2), "reading_progress": 0.3}, (1, "opened")),
+        ({"first_opened_at": iso(2), "reading_progress": 0.2}, (1, "opened")),
         ({"location": "feed", "saved_at": iso(30)}, (0, "ignored")),
     ],
 )
@@ -185,6 +185,27 @@ def test_opened_and_immediately_abandoned_stays_out_of_training():
         )
         is None
     )
+
+
+def test_a_long_read_counts_even_when_it_was_never_finished():
+    """A third of a 9000-word essay is a bigger commitment than finishing a
+    300-word note, and a percentage-only rule scores it as the lesser one."""
+    assert recommender_model.label_for(
+        doc("x", word_count=9000, reading_progress=0.33, first_opened_at=iso(1)), now=NOW
+    ) == (1, "read")
+
+
+def test_finishing_something_very_short_is_not_a_deep_read():
+    """80 words consumed is not evidence of much, whatever the percentage says."""
+    assert recommender_model.label_for(
+        doc("x", word_count=100, reading_progress=0.6, first_opened_at=iso(1)), now=NOW
+    ) == (None if config.OPENED_WORDS > 60 else (1, "opened"))
+
+
+def test_deliberately_finishing_a_short_post_still_counts():
+    assert recommender_model.label_for(
+        doc("x", word_count=300, reading_progress=0.95, first_opened_at=iso(1)), now=NOW
+    ) == (1, "read")
 
 
 def test_a_shortlisted_document_he_never_opened_becomes_a_negative():
@@ -338,6 +359,26 @@ def test_the_random_arm_is_not_deduplicated(store):
     store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(4)})
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == 1
+
+
+def test_short_reads_are_guaranteed_slots(store):
+    """Unconstrained, the ranker builds a long-form monoculture: 67% of its picks
+    were 2500+ words against a pool that is 57% short."""
+    long_docs = [doc(f"f{i}", word_count=5000) for i in range(20)]
+    short_docs = [doc(f"s{i}", word_count=300) for i in range(20)]
+    stock(store, long_docs + short_docs)
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW)
+    ranked_feed = [d for d, slot, _ in chosen if slot == "feed"]
+    shorts = [d for d in ranked_feed if d["word_count"] < config.SHORT_WORDS]
+    assert len(shorts) >= config.FEED_SHORT_SLOTS
+
+
+def test_the_quota_is_a_floor_not_a_cap(store):
+    """If a pool is all short, every pick is short -- no artificial long quota."""
+    stock(store, [doc(f"s{i}", word_count=300) for i in range(20)])
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW)
+    ranked = [d for d, slot, _ in chosen if slot == "feed"]
+    assert len(ranked) == config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
 
 
 def test_pick_skips_stale_feed_items(store):

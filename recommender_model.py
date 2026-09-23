@@ -53,6 +53,7 @@ def label_for(doc, evicted_unopened=False, now=None):
     tags = _tags(doc)
     progress = doc.get("reading_progress") or 0.0
     opened = bool(doc.get("first_opened_at"))
+    words_read = progress * (doc.get("word_count") or 0)
 
     if config.RATE_GOOD_TAG in tags:
         return 1, "rated"
@@ -60,15 +61,15 @@ def label_for(doc, evicted_unopened=False, now=None):
         return 0, "rated"
     if tags & {"favorite", "important"}:
         return 1, "favorited"
-    if progress > 0.5:
+    if words_read >= config.READ_WORDS or progress >= config.READ_PROGRESS:
         return 1, "read"
-    if opened and progress > 0.1:
+    if opened and words_read >= config.OPENED_WORDS:
         return 1, "opened"
     if evicted_unopened and not opened:
         return 0, "passed"
     if opened:
-        # Opened and immediately abandoned. Could be a bounce, could be a save
-        # for later -- genuinely ambiguous, so it stays out of training.
+        # Opened and barely read. Could be a bounce, could be a save for later --
+        # genuinely ambiguous, so it stays out of training.
         return None
     saved = _parse(doc.get("saved_at"))
     if (

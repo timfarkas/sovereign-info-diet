@@ -180,6 +180,17 @@ RESURFACE_SAMPLE_SIZE = 300    # random draw from `later` that resurfacing ranks
 # Only ranked picks are deduplicated -- a random arm that skipped duplicates
 # would no longer be a uniform draw, and it is the measurement.
 DEDUP_SIMILARITY = 0.93
+
+# Length balance. Left alone the ranker builds a long-form monoculture: measured
+# 2026-09-24, the fresh-feed pool is 57% under 800 words but the ranked picks
+# came out 67% over 2500, a 5.6x over-representation. That is a real learned
+# preference, not a bug -- he does read long-form -- but it leaves nothing on the
+# list for a five-minute gap. So each pool reserves a floor of short picks.
+# Costs some predicted relevance by construction; the random arms will show
+# whether that costs anything real.
+SHORT_WORDS = 800
+FEED_SHORT_SLOTS = 2       # of the 6 ranked feed picks
+LATER_SHORT_SLOTS = 1      # of the 2 ranked later picks
 RESHOW_COOLDOWN_DAYS = 60      # do not wave the same document around again
 FEED_CANDIDATE_DAYS = 7        # how far back a fresh feed item can be and still qualify
 
@@ -187,6 +198,16 @@ FEED_CANDIDATE_DAYS = 7        # how far back a fresh feed item can be and still
 # negative -- weak because not opening something mostly means the firehose
 # outran the reader, not that he disliked it.
 FEED_STALE_DAYS = 4
+# What counts as having read something, measured in words actually consumed
+# (reading_progress x word_count) rather than percentage. Percentage alone is
+# biased against long-form: measured 2026-09-24 on the real corpus, a bare
+# progress>0.5 rule missed 68 documents where he read 500+ words without
+# finishing, and credited 65 where he "finished" under 200 words. The progress
+# clause stays as an OR so that deliberately finishing something short still
+# counts.
+READ_WORDS = 500
+READ_PROGRESS = 0.8
+OPENED_WORDS = 100     # below this an open says nothing either way
 LABEL_WEIGHTS = {
     "rated": 3.0,          # he tagged it rate:good / rate:bad
     "favorited": 2.0,      # favorite / important

@@ -117,23 +117,34 @@ def pick(store, model, taste, now=None, rng=None):
     ]
     later = [d for d in store.documents(location="later") if eligible(d)]
 
-    def fill(pool, label, total, random_slots):
+    def fill(pool, label, total, random_slots, short_slots):
         """Rank the pool, take the top few, then draw the rest uniformly from it.
 
         Both arms come out of the same pool on purpose: that is what makes
-        comparing their open rates a statement about the ranking.
+        comparing their open rates a statement about the ranking. `short_slots`
+        of the ranked picks are reserved for short documents, so the list always
+        has something for a five-minute gap.
         """
         if not pool:
             return []
         scores = recommender_model.score_documents(pool, embeddings, model, taste)
         ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
-        picks = []
-        for candidate in ranked:
-            if len(picks) >= total - random_slots:
-                break
-            if _duplicates(candidate, [d for d, _, _ in picks], embeddings):
-                continue
-            picks.append((candidate, label, scores.get(candidate["id"], 0.0)))
+        ranked_slots = total - random_slots
+
+        def take(candidates, limit, picks):
+            for candidate in candidates:
+                if len(picks) >= limit:
+                    break
+                if candidate["id"] in {d["id"] for d, _, _ in picks}:
+                    continue
+                if _duplicates(candidate, [d for d, _, _ in picks], embeddings):
+                    continue
+                picks.append((candidate, label, scores.get(candidate["id"], 0.0)))
+            return picks
+
+        short = [d for d in ranked if (d.get("word_count") or 0) < config.SHORT_WORDS]
+        picks = take(short, min(short_slots, ranked_slots), [])
+        picks = take(ranked, ranked_slots, picks)
         taken = {d["id"] for d, _, _ in picks}
         rest = [d for d in pool if d["id"] not in taken]
         picks += [
@@ -146,8 +157,14 @@ def pick(store, model, taste, now=None, rng=None):
     # all of `later` for its own favourites -- it only ranks within a random draw.
     backlog = rng.sample(later, min(config.RESURFACE_SAMPLE_SIZE, len(later)))
 
-    return fill(feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS) + fill(
-        backlog, "later", config.LATER_SLOTS, config.LATER_RANDOM_SLOTS
+    return fill(
+        feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS, config.FEED_SHORT_SLOTS
+    ) + fill(
+        backlog,
+        "later",
+        config.LATER_SLOTS,
+        config.LATER_RANDOM_SLOTS,
+        config.LATER_SHORT_SLOTS,
     )
 
 
