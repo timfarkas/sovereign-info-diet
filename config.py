@@ -90,6 +90,8 @@ SUMMARY_SERVICE_TIER = "flex"     # "flex" = half price, slower. "default" = sta
 # model we use, not a table of every model -- re-check when you change either.
 SUMMARY_MODEL_PRICE = (1.00, 0.10, 5.00)
 SUMMARY_COST_CEILING_USD = 0.25   # exceeding it prints a warning
+# Measured 2026-09-23 on a real digest: 489,224 chars -> 140,636 input tokens.
+CHARS_PER_TOKEN = 3.48
 
 # --- linked-page enrichment --------------------------------------------------
 # Fetch the pages posts point at so the summarizer can read the source instead

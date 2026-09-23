@@ -660,3 +660,40 @@ def test_unchanged_seed_list_still_uses_the_fresh_cache(tmp_path):
     s = scraper_with(tmp_path, [])     # no API responses scripted at all
     assert s.account_list(["seed1"], ttl_days=7) == ["cached_acct"]
     assert s.client.session.calls == []
+
+
+def test_spacex_com_is_not_mistaken_for_x_com():
+    """Host-boundary matching, not substring: spacex.com ends in 'x.com'."""
+    assert not is_blocked_link("https://spacex.com/launches/crew13")
+    assert not is_blocked_link("https://api.spacex.com/v1")
+    assert is_blocked_link("https://x.com/a/status/1")
+
+
+def test_oversized_corpus_is_trimmed_but_never_silently(capsys):
+    """The regression Tim caught was a SILENT cap. A budget-driven trim is fine
+    as long as it announces itself in the digest, not just in a logfile."""
+    from llm_summarizer import LLMSummarizer
+    big = [{"id": str(9000 - i), "handle": "a", "author_name": "A", "likes": i,
+            "retweets": 0, "created_at": "x", "text": f"BODY{i} " + "y" * 900,
+            "external_links": []} for i in range(4000)]
+    s = LLMSummarizer(model_name="test")
+    prompt = s.create_summary_prompt([], big, [])
+    from config import CHARS_PER_TOKEN, SUMMARY_COST_CEILING_USD, SUMMARY_MODEL_PRICE
+    budget = (SUMMARY_COST_CEILING_USD * 0.9 / SUMMARY_MODEL_PRICE[0]) * 1e6 * CHARS_PER_TOKEN
+    assert len(prompt) <= budget
+    assert s.tweets_dropped > 0
+    assert "dropped" in capsys.readouterr().out
+    # and what survives is the HIGH-engagement end, not an arbitrary slice:
+    # likes == i, so BODY3999 is the most-liked and BODY0 the least
+    assert "BODY3999 " in prompt
+    assert "BODY0 " not in prompt
+
+
+def test_a_corpus_that_fits_is_not_trimmed_at_all():
+    from llm_summarizer import LLMSummarizer
+    small = [{"id": "1", "handle": "a", "author_name": "A", "likes": 1,
+              "retweets": 0, "created_at": "x", "text": "hello",
+              "external_links": []}]
+    s = LLMSummarizer(model_name="test")
+    s.create_summary_prompt([], small, [])
+    assert s.tweets_dropped == 0

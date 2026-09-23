@@ -32,15 +32,19 @@ def strip_blocked_links(html: str) -> str:
     return BLOCKED_HREF.sub(repl, html)
 
 
+def by_engagement(tweets: List[Dict]) -> List[Dict]:
+    return sorted(tweets, key=lambda t: (t.get("likes") or 0) + (t.get("retweets") or 0),
+                  reverse=True)
+
+
 def format_tweets(tweets: List[Dict], limit: int = None) -> str:
     """Render tweets for the prompt, highest-engagement first."""
     if limit is None:
         try:
             from config import X_MAX_TWEETS_IN_PROMPT as limit
         except ImportError:
-            limit = 400
-    ranked = sorted(tweets, key=lambda t: (t.get("likes") or 0) + (t.get("retweets") or 0),
-                    reverse=True)[:limit]
+            limit = None
+    ranked = by_engagement(tweets)[:limit]
     ranked.sort(key=lambda t: t.get("id") or "", reverse=True)
     out = ""
     for i, t in enumerate(ranked, 1):
@@ -137,6 +141,7 @@ class LLMSummarizer:
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
         self.last_cost = None
+        self.tweets_dropped = 0
         
     def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None,
                               pages: List[Dict] = None) -> str:
@@ -169,13 +174,37 @@ class LLMSummarizer:
                     posts_content += (f"   - [{comment['score']}pts] "
                                       f"{clip(comment['body'], REDDIT_COMMENT_CHARS)}\n")
         
-        prompt = SUMMARY_PROMPT_TEMPLATE.format(
-            TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
-            posts_content=posts_content or "(no reddit posts in this window)",
-            tweets_content=format_tweets(tweets or []) or "(no X posts in this window)",
-            pages_content=format_pages(pages or []),
-        )
-        
+        from config import (CHARS_PER_TOKEN, SUMMARY_COST_CEILING_USD,
+                            SUMMARY_MODEL_PRICE)
+
+        def build(tws):
+            return SUMMARY_PROMPT_TEMPLATE.format(
+                TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
+                posts_content=posts_content or "(no reddit posts in this window)",
+                tweets_content=format_tweets(tws) or "(no X posts in this window)",
+                pages_content=format_pages(pages or []),
+            )
+
+        # Keep EVERY tweet by default. If the corpus has grown past what the
+        # budget can pay for, drop the lowest-engagement tail -- but record how
+        # many, and say so in the digest. A silent trim is the bug Tim caught;
+        # an announced one is a budget working as intended.
+        kept = by_engagement(tweets or [])
+        price_in = SUMMARY_MODEL_PRICE[0]
+        # leave a tenth of the ceiling for output tokens
+        budget_chars = int((SUMMARY_COST_CEILING_USD * 0.9 / price_in) * 1e6
+                           * CHARS_PER_TOKEN)
+        prompt = build(kept)
+        self.tweets_dropped = 0
+        while len(prompt) > budget_chars and len(kept) > 25:
+            drop = max(1, int(len(kept) * 0.1))
+            kept = kept[:-drop]
+            self.tweets_dropped += drop
+            prompt = build(kept)
+        if self.tweets_dropped:
+            print(f"⚠ prompt over the ${SUMMARY_COST_CEILING_USD:.2f} budget: dropped "
+                  f"the {self.tweets_dropped} lowest-engagement tweets of "
+                  f"{len(tweets or [])} to fit")
         return prompt
     
     def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None,
@@ -301,6 +330,11 @@ if __name__ == "__main__":
     summary += wall_appendix(pages)
 
     banner = health_banner()
+    if summarizer_dropped := getattr(summarizer, "tweets_dropped", 0):
+        banner += (f'<p><strong>⚠ Corpus trimmed to fit the budget</strong> — the '
+                   f'{summarizer_dropped} lowest-engagement X posts of {len(tweets)} '
+                   f'were left out of the analysis. Raise SUMMARY_COST_CEILING_USD or '
+                   f'prune X_SEED_ACCOUNTS.</p>')
     if not x_file:
         banner += (f'<p><strong>⚠ No fresh X data</strong> — {x_why}. '
                    f'The digest below is Reddit-only.</p>')
