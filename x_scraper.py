@@ -164,10 +164,17 @@ class XScraper:
         if self.accounts_cache.exists():
             cached = json.loads(self.accounts_cache.read_text())
             age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])
-            if not force and age < timedelta(days=ttl_days):
+            # a changed seed list invalidates the cache regardless of its age --
+            # otherwise adding a seed account does nothing for up to ttl_days and
+            # nothing tells you why
+            same_seeds = sorted(cached.get("seeds") or []) == sorted(seeds)
+            if not force and same_seeds and age < timedelta(days=ttl_days):
                 print(f"  [x] account list from cache ({len(cached['accounts'])} accounts, "
                       f"{age.days}d old)")
                 return cached["accounts"]
+            if not same_seeds:
+                print(f"  [x] seed list changed since the cache was written "
+                      f"({cached.get('seeds')} -> {seeds}) -- refreshing")
 
         accounts: Dict[str, None] = {}
         empty_seeds = []

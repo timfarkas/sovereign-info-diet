@@ -7,6 +7,7 @@ intermediate state, signal when the feed is sick, never surface a blocked link
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -636,3 +637,26 @@ def test_alignment_and_xrisk_are_first_class_priorities():
     for term in ("alignment", "ai safety", "x-risk", "interpretability",
                  "jailbreak", "existential"):
         assert term in low, term
+
+
+def test_changing_the_seed_list_invalidates_the_account_cache(tmp_path):
+    """Adding a seed account must take effect on the next run, not in up to
+    ttl_days. Silent staleness with nothing to explain it is the bad case."""
+    (tmp_path / "x_accounts.json").write_text(json.dumps(
+        {"fetched_at": datetime.now(timezone.utc).isoformat(),   # fresh!
+         "seeds": ["seed1"], "accounts": ["old"]}))
+    s = scraper_with(tmp_path, [accounts_payload(["old", "new"]),
+                               {"tweets": [], "has_next_page": False}])
+    got = s.account_list(["seed1", "seed2"], ttl_days=7)
+    assert got == ["new", "old"]        # refetched, not served from cache
+    written = json.loads((tmp_path / "x_accounts.json").read_text())
+    assert written["seeds"] == ["seed1", "seed2"]
+
+
+def test_unchanged_seed_list_still_uses_the_fresh_cache(tmp_path):
+    (tmp_path / "x_accounts.json").write_text(json.dumps(
+        {"fetched_at": datetime.now(timezone.utc).isoformat(),
+         "seeds": ["seed1"], "accounts": ["cached_acct"]}))
+    s = scraper_with(tmp_path, [])     # no API responses scripted at all
+    assert s.account_list(["seed1"], ttl_days=7) == ["cached_acct"]
+    assert s.client.session.calls == []
