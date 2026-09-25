@@ -5,7 +5,7 @@ import praw
 from dotenv import load_dotenv
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from typing import List, Dict, Optional, Any
 import hashlib
@@ -301,6 +301,25 @@ if __name__ == "__main__":
     print(f"\nPosts by subreddit:")
     for sub, count in sub_counts.items():
         print(f"  r/{sub}: {count}")
+
+    # Health file, mirroring extracts/x_health.json. A subreddit that failed and
+    # one that simply had no posts in the window both look like "0 posts" in the
+    # dump, and only this file can tell them apart afterwards.
+    Path("extracts/reddit_health.json").write_text(json.dumps({
+        "status": "down" if not all_posts else
+                  "degraded" if failed_subreddits else "healthy",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "configured": list(SUBREDDITS),
+        "failed": failed_subreddits,
+        "posts": len(all_posts),
+        "comments": total_comments,
+        "replies": total_replies,
+        "images": total_images,
+        "by_subreddit": dict(sub_counts),
+        "sort_by": SORT_BY,
+        "window_days": TIME_HORIZON_DAYS,
+        "quota_per_subreddit": posts_per_sub,
+    }, indent=2))
 
     if failed_subreddits:
         import sys

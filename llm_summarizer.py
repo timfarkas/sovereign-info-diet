@@ -5,7 +5,7 @@ import json
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import re
@@ -104,21 +104,39 @@ def health_banner(path: str = "extracts/x_health.json") -> str:
             + f". Checked {h.get('checked_at')}.{tail}</p>")
 
 
-def report_cost(model: str, usage) -> float:
-    """Print what this call cost and flag it if it blew the ceiling.
+def usage_breakdown(usage) -> Dict[str, Any]:
+    """Token counts and dollars for one completion, as plain data.
 
-    Tim set the budget per digest, so the digest should say what it cost rather
-    than leaving him to reconstruct it from an invoice a month later.
+    Split out of report_cost so the status page can record the same numbers the
+    log prints, without report_cost having to change what it returns.
     """
-    from config import (SUMMARY_COST_CEILING_USD, SUMMARY_MODEL_PRICE,
-                        SUMMARY_SERVICE_TIER)
+    from config import SUMMARY_MODEL_PRICE
     inp = getattr(usage, "prompt_tokens", 0) or 0
     out = getattr(usage, "completion_tokens", 0) or 0
     cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
     reasoning = getattr(getattr(usage, "completion_tokens_details", None),
                         "reasoning_tokens", 0) or 0
     p_in, p_cached, p_out = SUMMARY_MODEL_PRICE
-    cost = ((inp - cached) * p_in + cached * p_cached + out * p_out) / 1e6
+    return {
+        "input_tokens": inp,
+        "cached_tokens": cached,
+        "output_tokens": out,
+        "reasoning_tokens": reasoning,
+        "cost_usd": ((inp - cached) * p_in + cached * p_cached + out * p_out) / 1e6,
+    }
+
+
+def report_cost(model: str, usage) -> float:
+    """Print what this call cost and flag it if it blew the ceiling.
+
+    Tim set the budget per digest, so the digest should say what it cost rather
+    than leaving him to reconstruct it from an invoice a month later.
+    """
+    from config import SUMMARY_COST_CEILING_USD, SUMMARY_SERVICE_TIER
+    u = usage_breakdown(usage)
+    inp, out = u["input_tokens"], u["output_tokens"]
+    cached, reasoning = u["cached_tokens"], u["reasoning_tokens"]
+    cost = u["cost_usd"]
     print(f"Cost: ${cost:.4f} on {model} ({SUMMARY_SERVICE_TIER} tier) "
           f"({inp} input [{cached} cached] / {out} output [{reasoning} reasoning] tokens)")
     if cost > SUMMARY_COST_CEILING_USD:
@@ -126,6 +144,101 @@ def report_cost(model: str, usage) -> float:
               f"${cost - SUMMARY_COST_CEILING_USD:.4f} -- drop to gpt-6-luna, or trim "
               f"LINK_FETCH_MAX_PAGES / LINK_FETCH_MAX_CHARS")
     return cost
+
+
+def read_health(path: str) -> Dict[str, Any]:
+    """A leg's health file, or {} if it never wrote one. Never raises."""
+    f = Path(path)
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
+                 reddit_health=None, x_fresh=True, reddit_fresh=True,
+                 x_note="", reddit_note="", output_file=None,
+                 link_stats=None) -> Dict[str, Any]:
+    """One run's worth of numbers, as a plain dict, for the status page.
+
+    Pure: it reads what the run already computed and returns data. Nothing here
+    touches the network, and nothing here is allowed to be the reason a digest
+    does not get mailed.
+    """
+    from collections import Counter
+    from config import (LINK_FETCH_MAX_PAGES, SORT_BY, SUBREDDITS,
+                        SUMMARY_COST_CEILING_USD, SUMMARY_SERVICE_TIER,
+                        TIME_HORIZON_DAYS)
+    x_health = x_health if x_health is not None else {}
+    reddit_health = reddit_health if reddit_health is not None else {}
+    usage = dict(summarizer.last_usage or {})
+    failed = summary.startswith("Failed to generate summary")
+
+    problems = []
+    if not x_fresh:
+        problems.append(f"no fresh X data ({x_note})")
+    if not reddit_fresh:
+        problems.append(f"no fresh reddit data ({reddit_note})")
+    if x_health.get("status") not in (None, "healthy"):
+        problems.append(f"X ingestion reported status {x_health.get('status')}")
+    if reddit_health.get("failed"):
+        problems.append("subreddits that failed to scrape: "
+                        + ", ".join(reddit_health["failed"]))
+    if summarizer.tweets_dropped:
+        problems.append(f"{summarizer.tweets_dropped} X posts dropped to fit the "
+                        f"${SUMMARY_COST_CEILING_USD:.2f} budget")
+    if usage.get("cost_usd", 0) > SUMMARY_COST_CEILING_USD:
+        problems.append(f"cost ${usage['cost_usd']:.4f} is over the "
+                        f"${SUMMARY_COST_CEILING_USD:.2f} ceiling")
+    if failed:
+        problems.append("the model call failed -- the digest carries an error instead "
+                        "of a summary")
+
+    return {
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "ok": not failed,
+        "window_days": TIME_HORIZON_DAYS,
+        "problems": problems,
+        "reddit": {
+            "total": len(posts),
+            "by_subreddit": dict(Counter(p.get("subreddit") for p in posts)),
+            "configured": list(SUBREDDITS),
+            "failed": reddit_health.get("failed") or [],
+            "comments": sum(len(p.get("comments") or []) for p in posts),
+            "sort_by": SORT_BY,
+            "fresh": reddit_fresh,
+            "note": reddit_note,
+            "health": reddit_health,
+        },
+        "x": {
+            "total": len(tweets),
+            "by_account": dict(Counter(t.get("handle") for t in tweets)),
+            "fresh": x_fresh,
+            "note": x_note,
+            "health": x_health,
+        },
+        "links": {
+            "attempted": len(pages),
+            "limit": LINK_FETCH_MAX_PAGES,
+            "read": len(readable(pages)),
+            "walled": len(unreadable(pages)),
+            "cache_hits": (link_stats or {}).get("cached"),
+            "by_status": dict(Counter(
+                p.get("status", "?").split(":")[0].strip() if p.get("status") != "ok"
+                else "read" for p in pages)),
+        },
+        "llm": dict(usage, **{
+            "model": summarizer.model,
+            "tier": SUMMARY_SERVICE_TIER,
+            "prompt_chars": summarizer.prompt_chars,
+            "summary_chars": len(summary),
+            "tweets_dropped": summarizer.tweets_dropped,
+            "ceiling": SUMMARY_COST_CEILING_USD,
+        }),
+        "output": {"file": str(output_file) if output_file else None},
+    }
 
 
 class LLMSummarizer:
@@ -141,7 +254,9 @@ class LLMSummarizer:
         self.client = OpenAI(api_key=api_key)
         self.model = model_name
         self.last_cost = None
+        self.last_usage = {}
         self.tweets_dropped = 0
+        self.prompt_chars = 0
         
     def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None,
                               pages: List[Dict] = None) -> str:
@@ -218,6 +333,7 @@ class LLMSummarizer:
               f"with {self.model}...")
         
         prompt = self.create_summary_prompt(posts, tweets, pages)
+        self.prompt_chars = len(prompt)
         print(f"Prompt is {len(prompt):,} chars")
         
         from config import SUMMARY_SERVICE_TIER
@@ -245,6 +361,7 @@ class LLMSummarizer:
                 response = call("default")
             summary = strip_blocked_links(response.choices[0].message.content.strip())
             self.last_cost = report_cost(self.model, response.usage)
+            self.last_usage = usage_breakdown(response.usage)
 
             print("Summary generated successfully")
             return summary
@@ -316,12 +433,14 @@ if __name__ == "__main__":
         raise SystemExit("no input from either source -- refusing to mail an empty digest")
 
     from config import LINK_FETCH_ENABLED, LINK_FETCH_MAX_PAGES, LINK_FETCH_MAX_CHARS
-    pages = []
+    pages, link_stats = [], {}
     if LINK_FETCH_ENABLED:
         # a fetch leg that dies must not take the digest with it
         try:
-            pages = LinkFetcher().enrich(tweets, posts, limit=LINK_FETCH_MAX_PAGES,
-                                         max_chars=LINK_FETCH_MAX_CHARS)
+            fetcher = LinkFetcher()
+            pages = fetcher.enrich(tweets, posts, limit=LINK_FETCH_MAX_PAGES,
+                                   max_chars=LINK_FETCH_MAX_CHARS)
+            link_stats = dict(fetcher.stats)
         except Exception as e:
             print(f"[links] enrichment failed, continuing without it: {e}")
 
@@ -352,3 +471,24 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print(summary)
     print("="*60)
+
+    # Status page. Wrapped because a rendering bug must never be the reason the
+    # digest does not go out -- but it prints the traceback rather than
+    # swallowing it, so a broken page is loud in the log instead of invisible.
+    try:
+        import stats_page
+        import stats_store
+        row = digest_stats(
+            posts, tweets, pages, summarizer, summary,
+            x_health=read_health("extracts/x_health.json"),
+            reddit_health=read_health("extracts/reddit_health.json"),
+            x_fresh=bool(x_file), reddit_fresh=bool(reddit_file),
+            x_note=x_why, reddit_note=reddit_why,
+            output_file=output_file, link_stats=link_stats,
+        )
+        stats_store.record("digest", row)
+        print(f"[stats] wrote {stats_page.render_digest_page()}")
+    except Exception:
+        import traceback
+        print("[stats] status page failed -- the digest itself is unaffected:")
+        traceback.print_exc()
