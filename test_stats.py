@@ -467,3 +467,14 @@ def test_no_credit_reading_shows_nothing_rather_than_free(paths):
     markup = stats_page.render_digest(stats_store.load("digest"))
     assert "not recorded for this run" in markup
     assert "$0.0000" not in markup
+
+
+def test_a_bare_platform_url_is_stripped_out_of_quoted_post_text(paths):
+    """Unclickable here, still a dead address on his devices and still a nudge."""
+    bodies = stats_page.tweet_bodies([{
+        "handle": "someone",
+        "text": "look at this https://t.co/abc123 and this https://arxiv.org/abs/1",
+    }])
+    assert "t.co" not in bodies["someone"]
+    assert "arxiv.org/abs/1" in bodies["someone"]
+    assert "look at this" in bodies["someone"]

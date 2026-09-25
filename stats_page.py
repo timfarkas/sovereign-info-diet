@@ -30,6 +30,7 @@ Design notes worth keeping:
 import html
 import json
 import math
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -458,8 +459,24 @@ def load_dump(path):
         return None
 
 
+BARE_URL = re.compile(r'https?://\S+')
+
+
+def scrub_platform_urls(text):
+    """Drop bare x.com/t.co/reddit links out of quoted post text.
+
+    They are unclickable here, but they are still a dead address on his devices
+    and still a nudge back toward the platform. The expanded destinations are
+    carried separately in each post's external links, so nothing is lost.
+    """
+    from x_scraper import is_blocked_link
+    return BARE_URL.sub(lambda m: "" if is_blocked_link(m.group(0)) else m.group(0),
+                        text or "")
+
+
 def clip(text, limit):
-    text = (text or "").strip()
+    text = scrub_platform_urls(text).strip()
+    text = re.sub(r"[ \t]{2,}", " ", text)
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
 
