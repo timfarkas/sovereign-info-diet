@@ -28,6 +28,8 @@ Design notes worth keeping:
 """
 
 import html
+import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +98,9 @@ summary {{ cursor: pointer; color: {TEXT_3}; font-size: .75rem; letter-spacing: 
 footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid {LINE};
          color: {TEXT_3}; font-size: .75rem; }}
 svg {{ display: block; width: 100%; height: auto; overflow: visible; }}
+.post {{ border-left: 2px solid {LINE}; padding: .35rem 0 .35rem .7rem;
+        margin: .5rem 0; font-size: .82rem; }}
+.post .why {{ font-size: .75rem; }}
 """
 
 
@@ -290,18 +295,30 @@ def num_or_dash(value, fmt):
     return DASH if value is None else esc(fmt(value))
 
 
-def bar_chart(items, total_label="", fmt=lambda v: f"{v:,.0f}"):
-    """Horizontal bars for one categorical series. items: [(label, value)]."""
+def bar_chart(items, total_label="", fmt=lambda v: f"{v:,.0f}", log=False,
+              bodies=None):
+    """Horizontal bars for one categorical series. items: [(label, value)].
+
+    `log=True` scales bar length by log10(1+v). Use it only where the series
+    really does span orders of magnitude -- a long tail of accounts with one
+    post each against a head with forty. The number printed at the end of every
+    bar is always the true value, and the table view carries them all, so the
+    scale changes the picture and never the figures.
+
+    `bodies` is {label: html}; when given, each row becomes expandable and that
+    html is what you get when you open it.
+    """
     items = [(k, v) for k, v in items if v is not None]
     if not items:
         return '<p class="muted">nothing recorded.</p>'
-    top = max(v for _, v in items) or 1
+    scale = (lambda v: math.log10(1 + max(v, 0))) if log else (lambda v: max(v, 0))
+    top = max(scale(v) for _, v in items) or 1
     row_h, label_w, bar_w = 22, 210, 470
     h = row_h * len(items) + 6
     out = [f'<svg viewBox="0 0 {label_w + bar_w + 60} {h}" role="img">']
     for i, (label, value) in enumerate(items):
         y = i * row_h + 4
-        width = max(2.0, bar_w * value / top)
+        width = max(2.0, bar_w * scale(value) / top)
         out.append(f'<text x="0" y="{y + 12}" font-size="11" fill="{TEXT_2}">'
                    f'{esc(label[:34])}</text>')
         out.append(f'<rect x="{label_w}" y="{y + 3}" width="{width:.1f}" height="13" '
@@ -311,7 +328,203 @@ def bar_chart(items, total_label="", fmt=lambda v: f"{v:,.0f}"):
                    f'fill="{TEXT_2}">{esc(fmt(value))}</text>')
     out.append("</svg>")
     grid = table(["item", "n"], [[esc(k), esc(fmt(v))] for k, v in items], ["l", "n"])
-    return "".join(out) + details("data", grid)
+    note = ('<p class="sub">bar length is log10(1+n); the number on each bar is '
+            'the real count</p>' if log else "")
+    drill = ""
+    if bodies:
+        drill = "".join(
+            details(f"{label} ({fmt(value)})", bodies[label])
+            for label, value in items if bodies.get(label)
+        )
+    return note + "".join(out) + drill + details("data", grid)
+
+
+def contribution_chart(contributions, labels=None):
+    """Diverging bars: what pushed this document's log-odds up or down.
+
+    Blue right / red left with a neutral zero line -- the documented diverging
+    pair. Units are log-odds against the average document, and because the model
+    is linear they are exact rather than indicative: they sum to the score.
+    """
+    items = [(k, v) for k, v in contributions.items() if v is not None]
+    if not items:
+        return ""
+    labels = labels or {}
+    span = max(abs(v) for _, v in items) or 1.0
+    row_h, label_w, half = 24, 150, 190
+    w, h = label_w + 2 * half + 70, row_h * len(items) + 8
+    mid = label_w + half
+    out = [f'<svg viewBox="0 0 {w} {h}" role="img">']
+    out.append(f'<line x1="{mid}" y1="0" x2="{mid}" y2="{h - 6}" '
+               f'stroke="{TEXT_3}" stroke-width="1"/>')
+    for i, (key, value) in enumerate(items):
+        y = i * row_h + 5
+        length = max(2.0, half * abs(value) / span)
+        x = mid if value >= 0 else mid - length
+        colour = SERIES[0] if value >= 0 else BAD
+        out.append(f'<text x="0" y="{y + 12}" font-size="11" fill="{TEXT_2}">'
+                   f'{esc(labels.get(key, key))}</text>')
+        out.append(f'<rect x="{x:.1f}" y="{y + 3}" width="{length:.1f}" height="13" '
+                   f'rx="4" fill="{colour}">'
+                   f'<title>{esc(key)}: {value:+.3f} log-odds</title></rect>')
+        anchor_x = mid + length + 8 if value >= 0 else mid - length - 8
+        align = "start" if value >= 0 else "end"
+        out.append(f'<text x="{anchor_x:.1f}" y="{y + 14}" font-size="11" '
+                   f'text-anchor="{align}" fill="{TEXT_2}">{value:+.2f}</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+CONTRIBUTION_LABELS = {
+    "topic": "topic (what it is about)",
+    "length": "length (log words)",
+    "format": "format (article/rss/email/...)",
+}
+
+EVIDENCE_LABELS = {
+    "rated": "you rated it", "favorited": "you favourited it",
+    "read": "you read it", "opened": "you opened it",
+    "passed": "shown and skipped", "ignored": "went stale unopened",
+}
+
+
+def why_this_score(attr):
+    """The expandable explanation behind one pick's score."""
+    if not attr:
+        return ""
+    contributions = attr.get("contributions") or {}
+    base_p = attr.get("baseline_probability")
+    final_p = attr.get("probability")
+    body = (
+        f'<p class="why">The average document in your library scores '
+        f'<strong>{pct(base_p, 2)}</strong>. These three terms take it to '
+        f'<strong>{pct(final_p, 2)}</strong>. Bars are log-odds and they add up '
+        f'exactly -- the model is linear, so this is the score, not an '
+        f'approximation of it.</p>'
+        + contribution_chart(contributions, CONTRIBUTION_LABELS)
+    )
+    for side, heading in (("like", "closest things you engaged with"),
+                          ("unlike", "closest things you did not")):
+        hits = attr.get(side) or []
+        if not hits:
+            continue
+        body += f'<p class="sub" style="margin-top:.7rem">{heading}</p>'
+        body += table(["", "cos", "why it is labelled that way"], [
+            [esc(h.get("title") or h.get("id")), num(h.get("similarity"), 2),
+             esc(EVIDENCE_LABELS.get(h.get("reason"), h.get("reason") or "?"))]
+            for h in hits], ["l", "n", "l"])
+    body += ('<p class="why" style="margin-top:.7rem">The topic term is a single '
+             'number because the encoder is frozen and its 384 dimensions have no '
+             'individual meaning -- a bar per dimension would be 384 bars of noise. '
+             'The nearest-neighbour lists above are the readable form of that term: '
+             'what this looks like among things you have already judged.</p>')
+    fmt = (contributions.get("format") or 0)
+    if abs(fmt) > abs(contributions.get("topic") or 0):
+        body += ('<p class="why"><strong>Format is outweighing topic on this one.</strong> '
+                 'The category one-hots track where a document lives -- the fresh feed '
+                 'is mostly <code>rss</code>, the backlog mostly <code>article</code> -- '
+                 'and location correlates with the label, so a large format term means '
+                 'the score is being driven by what kind of thing it is rather than what '
+                 'it is about. That is the known reason scores do not compare across '
+                 'the two pools.</p>')
+    if base_p is not None and base_p > 0.4:
+        body += (f'<p class="why">The {pct(base_p, 1)} baseline is not the real base '
+                 'rate -- roughly one document in eight is a positive. The head is '
+                 'fitted with <code>class_weight="balanced"</code>, so its probabilities '
+                 'are calibrated to a balanced prior. Compare scores to each other, '
+                 'never read one as a probability that you will read the thing.</p>')
+    return details("why this score", body)
+
+
+# -- drill-down: the posts themselves -----------------------------------------
+#
+# Rendered straight off the dumps each run already writes to extracts/, whose
+# paths the run row records. That keeps the history rows small -- 2,230 tweets
+# in every row would be ~90 MB of jsonl after six months -- and means the page
+# and the digest are reading literally the same bytes.
+
+def load_dump(path):
+    """A recorded source dump, or None if it has been cleaned up since."""
+    if not path:
+        return None
+    f = Path(path)
+    if not f.is_absolute():
+        f = Path(__file__).resolve().parent / f
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def clip(text, limit):
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def external_links(urls):
+    """Only links that leave the walled platforms -- the rest are dead to him."""
+    from x_scraper import is_blocked_link
+    keep = [u for u in (urls or []) if not is_blocked_link(u)]
+    if not keep:
+        return ""
+    return " ".join(f'<a href="{esc(u)}">{esc(u.split("//")[-1][:60])}</a>'
+                    for u in keep[:3])
+
+
+def tweet_bodies(tweets):
+    """{handle: html} -- every post that account contributed, busiest first."""
+    by_handle = {}
+    for tweet in tweets or []:
+        by_handle.setdefault(tweet.get("handle"), []).append(tweet)
+    bodies = {}
+    for handle, items in by_handle.items():
+        items.sort(key=lambda t: (t.get("likes") or 0) + (t.get("retweets") or 0),
+                   reverse=True)
+        rows = ""
+        for t in items:
+            links = external_links(t.get("external_links"))
+            quoted = (f'<div class="why">quoting: {esc(clip(t.get("quoted_text"), 220))}</div>'
+                      if t.get("quoted_text") else "")
+            rows += (
+                f'<div class="post"><div class="why">'
+                f'{num(t.get("likes"))} likes &middot; {num(t.get("retweets"))} RT '
+                f'&middot; {esc(str(t.get("created_at") or "")[:16])}</div>'
+                f'<div>{esc(clip(t.get("text"), 800))}</div>{quoted}'
+                + (f'<div class="why">{links}</div>' if links else "")
+                + '</div>'
+            )
+        bodies[handle] = rows
+    return bodies
+
+
+def reddit_bodies(posts):
+    """{subreddit: html} -- the posts, their scores and their top comment."""
+    by_sub = {}
+    for post in posts or []:
+        by_sub.setdefault(post.get("subreddit"), []).append(post)
+    bodies = {}
+    for sub, items in by_sub.items():
+        items.sort(key=lambda p: -(p.get("score") or 0))
+        rows = ""
+        for p in items:
+            link = external_links([p["url"]] if p.get("url") else [])
+            comments = p.get("comments") or []
+            top = max(comments, key=lambda c: c.get("score") or 0) if comments else None
+            rows += (
+                f'<div class="post"><div><strong>{esc(clip(p.get("title"), 200))}</strong></div>'
+                f'<div class="why">{num(p.get("score"))} pts &middot; '
+                f'{len(comments)} top-level comments</div>'
+                + (f'<div class="why">{link}</div>' if link else "")
+                + (f'<div class="why">{esc(clip(p.get("selftext"), 600))}</div>'
+                   if p.get("selftext") else "")
+                + (f'<div class="why">top comment [{num(top.get("score"))}]: '
+                   f'{esc(clip(top.get("body"), 300))}</div>' if top else "")
+                + '</div>'
+            )
+        bodies[sub] = rows
+    return bodies
 
 
 def page(title, subtitle, status, body, other):
@@ -371,12 +584,15 @@ def render_digest(rows):
                      + "".join(f"<li>{esc(p)}</li>" for p in problems) + "</ul></div>")
 
     over = cost is not None and ceiling is not None and cost > ceiling
+    spend = get(last, "x", "spend", default={}) or {}
+    x_usd = spend.get("usd")
+    total_usd = None if cost is None and x_usd is None else (cost or 0) + (x_usd or 0)
     head_tiles = tiles([
         tile("posts analyzed", num((reddit_n or 0) + (x_n or 0)),
              f"{num(x_n)} X &middot; {num(reddit_n)} reddit"),
-        tile("llm cost", num(cost, 4, ) if cost is None else f"${cost:.4f}",
-             (f'<span style="color:{BAD}">over the ${ceiling:.2f} ceiling</span>'
-              if over else f"ceiling ${ceiling:.2f}" if ceiling else "")),
+        tile("cost per digest", DASH if total_usd is None else f"${total_usd:.4f}",
+             (f'{"$%.4f" % cost if cost is not None else "?"} llm + '
+              f'{"$%.4f" % x_usd if x_usd is not None else "?"} twitterapi')),
         tile("pages read", num(read_pages),
              f"{num(walled)} walled but linked"),
         tile("prompt", num(get(last, "llm", "prompt_chars"), suffix=" ch"),
@@ -393,7 +609,7 @@ def render_digest(rows):
         [(s, by_sub.get(s, 0)) for s in dict.fromkeys(list(configured) + list(by_sub))],
         key=lambda kv: -kv[1],
     )
-    acct_items = sorted(by_acct.items(), key=lambda kv: -kv[1])[:15]
+    acct_items = sorted(by_acct.items(), key=lambda kv: -kv[1])[:40]
 
     health = get(last, "x", "health", default={}) or {}
     x_rows = [
@@ -412,18 +628,29 @@ def render_digest(rows):
     if health.get("errors"):
         x_rows.append(["last error", f'<span class="why">{esc(str(health["errors"][-1])[:300])}</span>'])
 
+    posts = load_dump(get(last, "reddit", "file"))
+    tweets = load_dump(get(last, "x", "file"))
+    sub_bodies = reddit_bodies(posts) if posts else None
+    acct_bodies = tweet_bodies(tweets) if tweets else None
+    missing = ('<p class="sub">The source dump for this run is no longer on disk, '
+               'so the posts themselves cannot be shown.</p>')
+
     sources = (
         '<h2>sources, this run</h2>'
         f'<div class="card"><h3>reddit</h3>'
         f'<p class="sub">{num(reddit_n)} posts across {len(sub_items)} subreddits, '
         f'{num(get(last, "reddit", "comments"))} comments pulled in. '
         f'Window {num(last.get("window_days"))} days, sorted by '
-        f'{esc(get(last, "reddit", "sort_by", default="?"))}.</p>'
-        + bar_chart(sub_items, " posts") + '</div>'
+        f'{esc(get(last, "reddit", "sort_by", default="?"))}. '
+        f'Open a subreddit to read what it actually contributed.</p>'
+        + bar_chart(sub_items, " posts", log=True, bodies=sub_bodies)
+        + ("" if sub_bodies or not reddit_n else missing) + '</div>'
         f'<div class="card"><h3>X / twitter</h3>'
         + table(["", ""], x_rows)
-        + ('<p class="sub" style="margin-top:.8rem">busiest accounts this run</p>'
-           + bar_chart(acct_items, " posts") if acct_items else "")
+        + ('<p class="sub" style="margin-top:.8rem">busiest accounts this run '
+           f'-- top {len(acct_items)} of {len(by_acct)}. Open one to read its posts.</p>'
+           + bar_chart(acct_items, " posts", log=True, bodies=acct_bodies)
+           + ("" if acct_bodies else missing) if acct_items else "")
         + '</div>'
     )
 
@@ -453,6 +680,43 @@ def render_digest(rows):
                                 f'X posts dropped to fit the budget'
                                 if llm.get("tweets_dropped") else "no")],
         ]) + '</div>'
+    )
+
+    # -- what the night cost, both vendors
+    remaining = spend.get("credits_remaining")
+    used = spend.get("credits_used")
+    rate = spend.get("credits_per_usd")
+    runs_left = (remaining / used) if (remaining and used) else None
+    money = (
+        '<h2>what it cost</h2><div class="card">'
+        + table(["vendor", "unit", "usd"], [
+            [f'openai <span class="muted">{esc(get(last, "llm", "model", default="?"))}</span>',
+             f'{num(get(last, "llm", "input_tokens"))} in / '
+             f'{num(get(last, "llm", "output_tokens"))} out tokens',
+             DASH if cost is None else f"${cost:.4f}"],
+            ["twitterapi.io",
+             f'{num(used)} credits'
+             + (f' of {num(remaining)} left' if remaining is not None else ""),
+             DASH if x_usd is None else f"${x_usd:.4f}"],
+            ["<strong>total</strong>", "",
+             DASH if total_usd is None else f"<strong>${total_usd:.4f}</strong>"],
+        ], ["l", "l", "n"])
+        + (f'<p class="why" style="margin-top:.8rem">At this burn rate the '
+           f'twitterapi.io balance is good for about <strong>{runs_left:,.0f} more '
+           f'runs</strong>.</p>' if runs_left else "")
+        + (f'<p class="why">The credit count is measured -- balance before minus '
+           f'balance after, with a {config.TWITTERAPI_CREDIT_SETTLE_SECONDS}s settle '
+           f'wait because the debit lands late. The dollar figure is a conversion at '
+           f'{rate:,.0f} credits per dollar from <code>config.py</code>, and that rate '
+           f'is <strong>unverified</strong> -- check it against a twitterapi.io invoice '
+           f'and fix the constant if it is wrong.</p>' if rate and x_usd is not None
+           else '<p class="why">twitterapi.io spend is not recorded for this run. '
+                'It is measured from the balance before and after the scrape, so it '
+                'appears from the first run after that instrumentation landed.</p>')
+        + (f'<p class="why">The OpenAI ceiling is ${ceiling:.2f} per digest and '
+           f'applies to the model call only; twitterapi.io is outside it.</p>'
+           if ceiling else "")
+        + '</div>'
     )
 
     # -- links
@@ -500,7 +764,8 @@ def render_digest(rows):
     subtitle = (f'{len(rows)} run{"" if len(rows) == 1 else "s"} recorded &middot; '
                 f'last {esc(ago(last.get("run_at")))} &middot; 01:00 UTC nightly')
     return page("AI digest", subtitle, status,
-                warn_html + head_tiles + sources + summarization + links + trends + history,
+                warn_html + head_tiles + sources + money + summarization + links
+                + trends + history,
                 ("../recommender/", "recommender status"))
 
 
@@ -540,6 +805,16 @@ def render_recommender(rows):
     if last.get("dry_run"):
         warn_html += ('<div class="warnbox">This was a <strong>dry run</strong> -- '
                       'decisions were made, no tags were written.</div>')
+    stale = bool(get(last, "sync", "skipped"))
+    stale_note = ('<p class="why" style="margin-top:.8rem"><strong>This run skipped '
+                  'the sync</strong>, so every reading state below is frozen at the '
+                  'last real sync. Anything opened, finished or rated since then is '
+                  'not in the local store yet and will read as untouched. The 02:00 '
+                  'cycle always syncs first, so this only ever affects a hand-run '
+                  '<code>--skip-sync</code>.</p>' if stale else "")
+    if stale:
+        warn_html += ('<div class="warnbox">Sync was skipped -- reading states are '
+                      'as of the previous sync, not as of now.</div>')
 
     head_tiles = tiles([
         tile("holdout auc", num(auc, 3),
@@ -614,7 +889,8 @@ def render_recommender(rows):
             f'<div class="why">{esc(p.get("reason") or "")}</div>'
             + (f'<div class="why">nearest thing you have read: '
                f'{esc(p["nearest"]["title"])} (cos {p["nearest"]["similarity"]:.2f})</div>'
-               if p.get("nearest") else ""),
+               if p.get("nearest") else "")
+            + why_this_score(p.get("attribution")),
             esc(SLOT_NAMES.get(p.get("slot"), p.get("slot") or "?")),
             num(p.get("score"), 3) if p.get("score") is not None else DASH,
         ])
@@ -634,17 +910,21 @@ def render_recommender(rows):
 
     # -- what happened to the last batch
     evicted = last.get("evicted") or []
+    verdict_html = {"good": f'<span style="color:{GOOD}">rated good</span>',
+                    "bad": f'<span style="color:{BAD}">rated bad</span>'}
     ev_rows = [[esc(e.get("title") or e.get("id") or "?"),
                 esc(SLOT_NAMES.get(e.get("slot"), e.get("slot") or "?")),
                 esc(e.get("outcome") or "?"),
+                verdict_html.get(e.get("rating"), DASH),
                 pct(e.get("progress")) if e.get("progress") is not None else DASH]
                for e in evicted]
     evictions = (
         '<h2>the outgoing batch</h2><div class="card">'
         f'<p class="sub">{len(evicted)} documents came off the shortlist to make room. '
         'What became of them is the feedback that trains tomorrow\'s model.</p>'
-        + table(["document", "slot it came from", "outcome", "progress"], ev_rows,
-                ["l", "l", "l", "n"])
+        + table(["document", "slot it came from", "outcome", "your verdict",
+                 "progress"], ev_rows, ["l", "l", "l", "l", "n"])
+        + stale_note
         + '<p class="why" style="margin-top:.8rem">A "passed" here is not '
           'automatically a negative label. A document evicted on the same day it '
           'was added was never really offered, so it is excluded from training -- '
@@ -661,6 +941,7 @@ def render_recommender(rows):
             esc(SLOT_NAMES.get(slot, slot)),
             num(a.get("shown")), num(a.get("opened")), pct(a.get("open_rate")),
             num(a.get("read")), pct(a.get("read_rate")),
+            num(a.get("rated_good")), num(a.get("rated_bad")),
         ])
     shown_total = sum((arms.get(s) or {}).get("shown") or 0 for s in SLOT_NAMES)
     live = (
@@ -669,13 +950,19 @@ def render_recommender(rows):
         'scored on what you actually did with it. Each random arm is drawn from the '
         'same pool as the ranked picks on the line above it, so the two rows are '
         'directly comparable.</p>'
-        + table(["arm", "shown", "opened", "open rate", "read", "read rate"], arm_rows,
-                ["l", "n", "n", "n", "n", "n"])
+        + table(["arm", "shown", "opened", "open rate", "read", "read rate",
+                 "rated good", "rated bad"], arm_rows,
+                ["l", "n", "n", "n", "n", "n", "n", "n"])
+        + '<p class="why" style="margin-top:.8rem">Read rate is behavioural and '
+          'says nothing about whether it was worth reading -- a document he '
+          'finished and then tagged <code>rate:bad</code> counts in both the read '
+          'column and the rated-bad column. That is deliberate: collapsing them '
+          'would let the ranked arm bank a rejection as a win.</p>' 
         + f'<p class="why" style="margin-top:.8rem">{shown_total} shortlisted documents '
           'total so far. At roughly 10 a night with 2 of them random, this table needs '
           'months before the gap between a ranked row and its control means anything. '
           'It is the metric that will eventually be trustworthy, not the one that is '
-          'trustworthy today.</p></div>'
+          'trustworthy today.</p>' + stale_note + '</div>'
     )
 
     # -- overnight signals

@@ -257,7 +257,7 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
             row = shortlist_stats.build(
                 store, cycle=cycle, dry_run=dry_run, chosen=chosen, trace=trace,
                 evicted_ids=old, label_stats=stats, holdout=metrics,
-                trained=model is not None, sync_info=sync_info,
+                trained=model is not None, model=model, sync_info=sync_info,
                 embed_info=embed_info,
                 durations={"train_duration_s": train_duration,
                            "duration_s": time.monotonic() - started},

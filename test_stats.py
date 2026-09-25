@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import config
+import recommender_model
 import shortlist_stats
 import stats_page
 import stats_store
@@ -214,7 +215,7 @@ def test_overnight_signals_only_count_what_moved_since_the_last_sync(store):
         doc("rated", updated_at=iso(0.2), saved_at=iso(10), tags={"rate:good": {}}),
         doc("old", updated_at=iso(30), saved_at=iso(30)),
     ])
-    signals = shortlist_stats.overnight_signals(store, iso(1))
+    signals = shortlist_stats.overnight_signals(store.documents(), iso(1))
     assert signals["updated"] == 2
     assert signals["new_docs"] == 1
     assert signals["rated_good"] == 1
@@ -222,7 +223,7 @@ def test_overnight_signals_only_count_what_moved_since_the_last_sync(store):
 
 def test_overnight_signals_survive_a_first_run_with_no_previous_sync(store):
     store.upsert_documents([doc("a")])
-    assert shortlist_stats.overnight_signals(store, None)["updated"] == 0
+    assert shortlist_stats.overnight_signals(store.documents(), None)["updated"] == 0
 
 
 def test_a_random_pick_explains_itself_as_the_control_arm():
@@ -285,3 +286,184 @@ def test_a_skipped_sync_reports_unmeasured_rather_than_zero(paths):
     markup = stats_page.render_recommender(stats_store.load("shortlist"))
     assert "Not measured this run" in markup
     assert "documents Readwise touched" not in markup
+
+
+# -- his explicit verdict ----------------------------------------------------
+
+
+def test_a_document_he_rated_bad_is_not_banked_as_a_win(store):
+    """He read it to the end and then said it was bad. The arm that picked it
+    does not get to count that as a success it can hide inside "read"."""
+    store.upsert_documents([doc("a", first_opened_at=iso(1), reading_progress=1.0,
+                                tags={"rate:bad": {}})])
+    store.log_event("a", "added", "2026-09-01", slot="feed")
+    arms = shortlist_stats.live_arms(store)
+    assert arms["feed"]["read"] == 1        # behaviourally he did read it
+    assert arms["feed"]["rated_bad"] == 1   # and it is visibly a rejection
+    assert arms["feed"]["rated_good"] == 0
+
+
+def test_rating_is_kept_apart_from_reading():
+    assert shortlist_stats.rating(doc("a", tags={"rate:good": {}})) == "good"
+    assert shortlist_stats.rating(doc("a", tags={"rate:bad": {}})) == "bad"
+    assert shortlist_stats.rating(doc("a")) is None
+
+
+# -- score attribution -------------------------------------------------------
+
+
+class FakeModel:
+    """A linear head with a known shape, so the split can be checked exactly."""
+
+    def __init__(self, dim):
+        n = dim + 1 + len(recommender_model.CATEGORIES)
+        self.coef_ = np.zeros((1, n), dtype=np.float64)
+        self.coef_[0, :dim] = 0.1          # topic
+        self.coef_[0, dim] = 0.5           # length
+        self.coef_[0, dim + 1:] = 0.25     # format
+        self.intercept_ = np.array([0.3])
+
+
+def test_the_contributions_add_up_to_the_score_exactly(store):
+    """If the bars do not sum to the logit they are decoration, not explanation."""
+    documents = [doc(f"f{i}") for i in range(5)]
+    embed(store, documents)
+    embeddings = store.embeddings(config.EMBED_KEY)
+    baseline = shortlist_stats.baseline_features(store.documents(), embeddings)
+    model = FakeModel(config.EMBED_DIM)
+    attr = shortlist_stats.attribution(documents[0], embeddings[documents[0]["id"]],
+                                       model, baseline)
+    total = attr["baseline_logit"] + sum(attr["contributions"].values())
+    assert total == pytest.approx(attr["logit"], abs=1e-9)
+    assert attr["probability"] == pytest.approx(1 / (1 + np.exp(-attr["logit"])), abs=1e-9)
+    assert set(attr["contributions"]) == set(shortlist_stats.GROUPS)
+
+
+def test_the_average_document_gets_no_contribution_at_all(store):
+    """The split is taken about the mean, so the mean must land on the baseline."""
+    documents = [doc(f"f{i}") for i in range(6)]
+    embed(store, documents)
+    embeddings = store.embeddings(config.EMBED_KEY)
+    baseline = shortlist_stats.baseline_features(store.documents(), embeddings)
+    mean_doc = doc("mean", word_count=documents[0]["word_count"])
+    mean_vector = np.mean(np.vstack(list(embeddings.values())), axis=0)
+    attr = shortlist_stats.attribution(mean_doc, mean_vector, FakeModel(config.EMBED_DIM),
+                                       baseline)
+    for value in attr["contributions"].values():
+        assert value == pytest.approx(0.0, abs=1e-5)
+
+
+def test_attribution_is_absent_rather_than_guessed_without_a_model(store):
+    documents = [doc("a")]
+    embed(store, documents)
+    embeddings = store.embeddings(config.EMBED_KEY)
+    baseline = shortlist_stats.baseline_features(store.documents(), embeddings)
+    assert shortlist_stats.attribution(documents[0], embeddings["a"], None, baseline) is None
+    assert shortlist_stats.attribution(documents[0], None, FakeModel(config.EMBED_DIM),
+                                       baseline) is None
+
+
+def test_the_evidence_lists_separate_what_he_engaged_with_from_what_he_ignored(store):
+    labels = {"good": (1, 1.0, "read"), "bad": (0, 0.3, "ignored")}
+    target = np.zeros(config.EMBED_DIM, dtype=np.float32); target[0] = 1.0
+    other = np.zeros(config.EMBED_DIM, dtype=np.float32); other[1] = 1.0
+    embeddings = {"pick": target, "good": target, "bad": other}
+    labelled = shortlist_stats.labelled_matrix(labels, embeddings)
+    found = shortlist_stats.evidence("pick", embeddings, labelled, k=2)
+    assert [h["id"] for h in found["like"]] == ["good"]
+    assert [h["id"] for h in found["unlike"]] == ["bad"]
+    assert found["like"][0]["reason"] == "read"
+
+
+def test_the_control_arm_is_never_given_an_attribution(paths):
+    """Explaining a random pick would turn the measurement arm into an opinion."""
+    stats_store.record("shortlist", {
+        "run_at": NOW.isoformat(),
+        "picks": [{"id": "r", "title": "control", "slot": "feed-random",
+                   "score": None, "reason": "random draw", "attribution": None}],
+    })
+    markup = stats_page.render_recommender(stats_store.load("shortlist"))
+    assert "why this score" not in markup
+
+
+def test_a_skipped_sync_warns_on_the_outcome_tables_too(paths):
+    """The states in those tables are exactly what goes stale without a sync."""
+    stats_store.record("shortlist", {"run_at": NOW.isoformat(),
+                                     "sync": {"skipped": True}})
+    markup = stats_page.render_recommender(stats_store.load("shortlist"))
+    assert "frozen at the last real sync" in markup
+
+
+# -- the digest drill-down and log scale -------------------------------------
+
+
+def test_log_bars_still_print_the_true_counts():
+    svg = stats_page.bar_chart([("a", 1), ("b", 400)], log=True)
+    assert "log10" in svg
+    assert ">400<" in svg and ">1<" in svg
+
+
+def test_a_zero_count_survives_the_log_scale():
+    """log(0) is where a naive implementation divides by zero or drops the row."""
+    svg = stats_page.bar_chart([("dead", 0), ("alive", 10)], log=True)
+    assert "dead" in svg
+
+
+def test_drill_down_rows_carry_the_posts(paths):
+    bodies = {"r/foo": "<p>the actual post</p>"}
+    markup = stats_page.bar_chart([("r/foo", 1)], bodies=bodies)
+    assert "the actual post" in markup
+    assert "<details>" in markup
+
+
+def test_a_post_never_links_back_to_the_platform():
+    """His devices block those domains; a link there is dead and a temptation."""
+    bodies = stats_page.tweet_bodies([{
+        "handle": "someone", "text": "look",
+        "external_links": ["https://x.com/someone/status/1",
+                           "https://arxiv.org/abs/2401.00001"],
+    }])
+    assert "arxiv.org" in bodies["someone"]
+    assert "x.com" not in bodies["someone"]
+
+
+def test_reddit_drill_down_shows_score_and_top_comment():
+    bodies = stats_page.reddit_bodies([{
+        "subreddit": "singularity", "title": "a title", "score": 42,
+        "comments": [{"body": "meh", "score": 1}, {"body": "the good one", "score": 99}],
+    }])
+    assert "a title" in bodies["singularity"]
+    assert "42" in bodies["singularity"]
+    assert "the good one" in bodies["singularity"]
+
+
+def test_a_missing_source_dump_is_reported_not_faked(paths):
+    stats_store.record("digest", {"run_at": NOW.isoformat(),
+                                  "reddit": {"total": 5, "file": "extracts/gone.json"}})
+    markup = stats_page.render_digest(stats_store.load("digest"))
+    assert "no longer on disk" in markup
+
+
+def test_twitter_spend_shows_credits_and_flags_the_unverified_rate(paths):
+    stats_store.record("digest", {
+        "run_at": NOW.isoformat(),
+        "x": {"total": 10, "spend": {"credits_used": 150_000, "credits_remaining": 900_000,
+                                     "credits_per_usd": 100_000, "usd": 1.5}},
+        "llm": {"cost_usd": 0.25},
+    })
+    markup = stats_page.render_digest(stats_store.load("digest"))
+    assert "150,000" in markup
+    assert "$1.5000" in markup
+    assert "unverified" in markup
+    assert "$1.7500" in markup        # the total, both vendors
+
+
+def test_no_credit_reading_shows_nothing_rather_than_free(paths):
+    """A missing balance must not render as "the X leg cost $0"."""
+    stats_store.record("digest", {"run_at": NOW.isoformat(),
+                                  "x": {"total": 10, "spend": {"credits_used": None,
+                                                               "usd": None}},
+                                  "llm": {"cost_usd": 0.25}})
+    markup = stats_page.render_digest(stats_store.load("digest"))
+    assert "not recorded for this run" in markup
+    assert "$0.0000" not in markup
