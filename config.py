@@ -217,3 +217,13 @@ LABEL_WEIGHTS = {
     "ignored": 0.3,        # stale feed item, never opened
 }
 MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold start
+
+# --- run stats and the status pages -----------------------------------------
+# Both jobs fail silently into a logfile; nobody reads a logfile. Every run
+# appends one JSON row here and re-renders a static page under html_serve, so
+# the state of both systems is one VPN URL away instead of one `grep` away.
+STATS_DIR = "/home/kyro/projects/ai-news/data/run_stats"
+STATS_KEEP_RUNS = 180          # ~6 months of nightly rows, then the oldest fall off
+HTML_SERVE_DIR = "/home/kyro/html_serve"
+DIGEST_PAGE = "ai-digest"      # -> http://192.168.2.6:8080/ai-digest/
+RECOMMENDER_PAGE = "recommender"
