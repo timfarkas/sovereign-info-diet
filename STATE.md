@@ -1,16 +1,17 @@
 # State of this box
 
 What is running, what it is doing, and what is known to be wrong with it.
-Last updated 2026-09-24.
+Last updated 2026-09-25.
 
 ## Two independent jobs
 
 | | digest | shortlist recommender |
 |---|---|---|
-| entry point | `run_pipeline.sh` | `run_shortlist.sh` |
+| folder | `digest/` | `recommender/` |
+| entry point | `digest/run_pipeline.sh` | `recommender/run_shortlist.sh` |
 | cron | 01:00 UTC | 02:00 UTC |
 | log | `~/logs/ai-digest.log` | `~/logs/shortlist.log` |
-| venv | `.venv` | `.venv-rec` |
+| venv | `digest/.venv` | `recommender/.venv-rec` |
 | what it does | X + Reddit → LLM → digest email | ranks Readwise Reader, tags `shortlist` |
 | fails how | silently, into its log | silently, into its log |
 
@@ -74,8 +75,16 @@ back to 2019. Author is populated on 99%.
 Read rates vary enormously by publication — Astral Codex Ten 21 reads of 146
 items, reuters.com 8 of 1,183 — which is why author and site name are embedded.
 
-Labels derived: ~6,000, of which ~800 positive. The negative class is 87%
-"stale feed item never opened", which is the weakest evidence in the system.
+Labels derived: ~6,000, of which ~800 positive, as of 2026-09-24 -- **stale
+now.** The labelling rules changed 2026-09-25: `ignored` (stale, never-opened
+feed item) and `passed` (shortlisted, evicted unopened) now only fire when
+there is same-day corroborating evidence (something else was archived unread
+that day / most of that day's shortlist was actually read), instead of firing
+unconditionally. A dry run against the live corpus post-change measured 1,237
+labelled (832 positive) -- most of the old unconditional "stale feed, never
+opened" bulk no longer qualifies, and a new `archived_unread` reason picks up
+part of the slack. Net effect: far fewer labels, but each one should be a
+cleaner signal. Worth a fresh measurement pass once this has run for a while.
 
 ## Invariants — things that will silently break if changed
 
@@ -115,6 +124,7 @@ Labels derived: ~6,000, of which ~800 positive. The negative class is 87%
 ## Operating it
 
 ```bash
+cd recommender
 ./run_shortlist.sh --dry-run      # decide everything, write nothing
 ./run_shortlist.sh --full-sync    # re-pull every document
 .venv-rec/bin/python -m pytest test_shortlist.py --timeout 5
