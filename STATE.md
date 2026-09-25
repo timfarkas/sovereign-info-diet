@@ -12,6 +12,7 @@ Last updated 2026-09-25.
 | log | `~/logs/ai-digest.log` | `~/logs/shortlist.log` |
 | venv | `.venv` | `.venv-rec` |
 | what it does | X + Reddit → LLM → digest email | ranks Readwise Reader, tags `shortlist` |
+| costs | OpenAI tokens + twitterapi.io credits | nothing per run; embeddings are local |
 | fails how | silently, into its log | silently, into its log |
 
 They are deliberately separate: different dependencies (onnxruntime and
@@ -29,7 +30,12 @@ exists now is a pull surface: each run appends a JSON row to
 | recommender | <http://192.168.2.6:8080/recommender/> |
 
 Both carry a status pill and a "flagged this run" box, so a dead leg is one
-glance rather than one `grep`. Rebuild either from history without running a
+glance rather than one `grep`. Two things the pages have already shown that
+this file only asserted: the category one-hots contribute roughly +2.9 log-odds
+to a backlog `article` against -0.6 to a feed `rss` item, which is most of the
+gap between the two pools and is visible per pick under "why this score"; and
+`class_weight="balanced"` puts the average document at ~52%, so a score is not
+a probability that he will read the thing. Rebuild either from history without running a
 job: `.venv-rec/bin/python stats_page.py`. The recording is wrapped in a
 try/except in both jobs on purpose -- a rendering bug must never be the reason
 a digest does not go out, or the reason a cycle that already wrote tags to
