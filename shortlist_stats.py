@@ -210,7 +210,10 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         "labels": label_stats,
         "trained": trained,
         "holdout": holdout,
-        "overnight": overnight_signals(store, sync_info.get("since")),
+        # With no sync there is nothing newer to count, and printing zeros would
+        # claim he did nothing overnight when the truth is nobody asked.
+        "overnight": (None if sync_info.get("skipped")
+                      else overnight_signals(store, sync_info.get("since"))),
         "arms": live_arms(store),
         "pools": trace.get("_pools", {}),
         "picks": picks,
