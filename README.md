@@ -9,8 +9,9 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-`.env` needs: `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`,
-`OPENAI_API_KEY`, `EMAIL_FROM`, `EMAIL_TO`.
+Copy `.env.example` to `.env` and fill in the keys it lists (Reddit, OpenAI,
+twitterapi.io, the mail-from/to pair; Readwise and `HTML_SERVE_DIR` are for the
+recommender and the status pages respectively -- see their own sections below).
 
 ## the pipeline
 
@@ -106,26 +107,40 @@ The job only ever removes the `shortlist` tag from documents it added itself
 
 ## status pages
 
-Every run of either job appends one JSON row to `data/run_stats/` and re-renders
-a self-contained HTML page into `/home/kyro/html_serve/`, served VPN-only:
+Every run of either job appends one JSON row to `data/run_stats/`. That part is
+unconditional -- cheap, and useful history on its own. Turning it into a page is
+**opt-in**: set `HTML_SERVE_DIR` in `.env` to a directory some webserver serves,
+and both jobs render a self-contained HTML page there after every run. Leave it
+unset and nothing under `html_status/` ever writes to disk -- `.env.example`
+shows the knob.
 
-- <http://192.168.2.6:8080/ai-digest/> -- posts per source (log scale, and every
-  bar opens to the posts that account or subreddit actually contributed),
-  link-enrichment hit rate, and what the night cost across *both* vendors: OpenAI
-  tokens and twitterapi.io credits
-- <http://192.168.2.6:8080/recommender/> -- held-out AUC run by run against its
-  baselines, tonight's ten picks each with a "why this score" that splits the
-  logit into topic/length/format and lists the labelled documents it resembles,
-  the outgoing batch with his explicit verdict, ranked-vs-random measured live,
-  and the signals that arrived overnight
+```
+HTML_SERVE_DIR=/home/html          # -> <that dir>/ai-digest/, <that dir>/recommender/
+```
 
-`stats_store.py` is the storage (append-only jsonl, trimmed to
-`STATS_KEEP_RUNS`); `stats_page.py` is the renderer and can rebuild both pages
-from history alone:
+What each page shows:
+
+- **`ai-digest/`** -- posts per source (log scale, and every bar opens to the
+  posts that account or subreddit actually contributed), link-enrichment hit
+  rate, and what the night cost across *both* vendors: OpenAI tokens and
+  twitterapi.io credits
+- **`recommender/`** -- held-out AUC run by run against its baselines, tonight's
+  ten picks each with a "why this score" that splits the logit into
+  topic/length/format and lists the labelled documents it resembles, the
+  outgoing batch with his explicit verdict, ranked-vs-random measured live, and
+  the signals that arrived overnight
+
+`html_status/` is its own package: `stats_store.py` is the storage (append-only
+jsonl, trimmed to `STATS_KEEP_RUNS`), `stats_page.py` is the renderer, and
+`shortlist_stats.py` is the recommender-specific analysis (live arms, overnight
+signals, score attribution) that feeds the recommender page's row. Rebuild both
+pages from history alone, without running either job:
 
 ```bash
-.venv-rec/bin/python stats_page.py
+.venv-rec/bin/python -m html_status.stats_page
 ```
+
+(prints a one-line note and exits instead if `HTML_SERVE_DIR` is unset)
 
 The score explanation is exact rather than indicative: the head is linear, so
 `baseline + topic + length + format == logit` holds to floating point, and there
