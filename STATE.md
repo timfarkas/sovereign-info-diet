@@ -22,8 +22,10 @@ hold memory simultaneously on a 3.7 GB box.
 **Neither job tells anyone when it breaks** -- nothing pushes an alert. What
 exists now is a pull surface, in `html_status/`: each run appends a JSON row to
 `data/run_stats/<job>.jsonl` unconditionally, and -- only if `HTML_SERVE_DIR` is
-set in `.env` -- re-renders a static page there. On this box it's set to
-`/home/kyro/html_serve/`, reachable on the WireGuard mesh only:
+set in `.env` -- re-renders a static page there. **Not yet set on this box**
+(`.env` is root-owned; `kyro` can't write it) -- once it is, e.g. to
+`/home/kyro/html_serve/`, the pages land there, reachable on the WireGuard mesh
+only:
 
 | | page |
 |---|---|

@@ -9,9 +9,9 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill in the keys it lists (Reddit, OpenAI,
-twitterapi.io, the mail-from/to pair; Readwise and `HTML_SERVE_DIR` are for the
-recommender and the status pages respectively -- see their own sections below).
+`.env` needs: `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`,
+`OPENAI_API_KEY`, `EMAIL_FROM`, `EMAIL_TO`. `HTML_SERVE_DIR` is optional -- see
+"status pages" below.
 
 ## the pipeline
 
@@ -111,8 +111,7 @@ Every run of either job appends one JSON row to `data/run_stats/`. That part is
 unconditional -- cheap, and useful history on its own. Turning it into a page is
 **opt-in**: set `HTML_SERVE_DIR` in `.env` to a directory some webserver serves,
 and both jobs render a self-contained HTML page there after every run. Leave it
-unset and nothing under `html_status/` ever writes to disk -- `.env.example`
-shows the knob.
+unset and nothing under `html_status/` ever writes to disk.
 
 ```
 HTML_SERVE_DIR=/home/html          # -> <that dir>/ai-digest/, <that dir>/recommender/

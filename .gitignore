@@ -18,7 +18,6 @@ extracts/
 .env
 .env.local
 .env.*
-!.env.example
 config/secrets.yaml
 *.key
 *.pem
