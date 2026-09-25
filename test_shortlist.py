@@ -435,7 +435,15 @@ def test_a_dry_run_writes_nothing(store, tmp_path, monkeypatch):
     recording = RecordingClient()
     monkeypatch.setattr(config, "RECOMMENDER_DB", str(tmp_path / "t.sqlite3"))
     monkeypatch.setattr(shortlist_job, "ReadwiseClient", lambda *a, **k: recording)
-    monkeypatch.setattr(shortlist_job, "embed_missing", lambda *a, **k: 0)
+    monkeypatch.setattr(shortlist_job, "embed_missing",
+                        lambda *a, **k: {"pending": 0, "embedded": 0,
+                                         "dropped_superseded": 0})
+    monkeypatch.setattr(config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(config, "HTML_SERVE_DIR", str(tmp_path / "html"))
 
     assert shortlist_job.run(dry_run=True, skip_sync=True) == 0
     assert recording.writes == []
+    # a dry run still publishes, flagged as one -- the page is how you inspect it
+    page = tmp_path / "html" / config.RECOMMENDER_PAGE / "index.html"
+    assert page.exists()
+    assert "dry run" in page.read_text()
