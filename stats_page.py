@@ -497,8 +497,8 @@ def render_digest(rows):
         ["l", "n", "n", "n", "n", "n", "n", "l"],
     ) + '</div>'
 
-    subtitle = (f'{len(rows)} runs recorded &middot; last {esc(ago(last.get("run_at")))} '
-                f'&middot; 01:00 UTC nightly')
+    subtitle = (f'{len(rows)} run{"" if len(rows) == 1 else "s"} recorded &middot; '
+                f'last {esc(ago(last.get("run_at")))} &middot; 01:00 UTC nightly')
     return page("AI digest", subtitle, status,
                 warn_html + head_tiles + sources + summarization + links + trends + history,
                 ("../recommender/", "recommender status"))
@@ -753,8 +753,8 @@ def render_recommender(rows):
         ["l", "n", "n", "n", "n", "n", "n", "n"],
     ) + '</div>'
 
-    subtitle = (f'{len(rows)} runs recorded &middot; last {esc(ago(last.get("run_at")))} '
-                f'&middot; 02:00 UTC nightly')
+    subtitle = (f'{len(rows)} run{"" if len(rows) == 1 else "s"} recorded &middot; '
+                f'last {esc(ago(last.get("run_at")))} &middot; 02:00 UTC nightly')
     return page("Shortlist recommender", subtitle, status,
                 warn_html + head_tiles + perf + shortlist + evictions + live
                 + overnight + mechanics + history,
