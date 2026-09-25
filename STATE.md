@@ -1,7 +1,7 @@
 # State of this box
 
 What is running, what it is doing, and what is known to be wrong with it.
-Last updated 2026-09-24.
+Last updated 2026-09-25.
 
 ## Two independent jobs
 
@@ -18,8 +18,22 @@ They are deliberately separate: different dependencies (onnxruntime and
 scikit-learn have no business near the digest), and an hour apart so they never
 hold memory simultaneously on a 3.7 GB box.
 
-**Neither job tells anyone when it breaks.** The digest's absence is the only
-alarm for one; a stale shortlist is the only alarm for the other.
+**Neither job tells anyone when it breaks** -- nothing pushes an alert. What
+exists now is a pull surface: each run appends a JSON row to
+`data/run_stats/<job>.jsonl` and re-renders a static page under
+`/home/kyro/html_serve/`, reachable on the WireGuard mesh only:
+
+| | page |
+|---|---|
+| digest | <http://192.168.2.6:8080/ai-digest/> |
+| recommender | <http://192.168.2.6:8080/recommender/> |
+
+Both carry a status pill and a "flagged this run" box, so a dead leg is one
+glance rather than one `grep`. Rebuild either from history without running a
+job: `.venv-rec/bin/python stats_page.py`. The recording is wrapped in a
+try/except in both jobs on purpose -- a rendering bug must never be the reason
+a digest does not go out, or the reason a cycle that already wrote tags to
+Readwise reports failure. It prints the traceback rather than swallowing it.
 
 ## The box
 

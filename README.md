@@ -104,12 +104,41 @@ metric; the offline one is a smoke test.
 The job only ever removes the `shortlist` tag from documents it added itself
 (every add and eviction is logged), so anything shortlisted by hand is left alone.
 
+## status pages
+
+Every run of either job appends one JSON row to `data/run_stats/` and re-renders
+a self-contained HTML page into `/home/kyro/html_serve/`, served VPN-only:
+
+- <http://192.168.2.6:8080/ai-digest/> -- posts per source, link-enrichment hit
+  rate, tokens and cost per digest, and what got flagged
+- <http://192.168.2.6:8080/recommender/> -- held-out AUC run by run against its
+  baselines, tonight's ten picks with the reason each was chosen, the outgoing
+  batch and what became of it, ranked-vs-random measured live, and the signals
+  that arrived overnight
+
+`stats_store.py` is the storage (append-only jsonl, trimmed to
+`STATS_KEEP_RUNS`); `stats_page.py` is the renderer and can rebuild both pages
+from history alone:
+
+```bash
+.venv-rec/bin/python stats_page.py
+```
+
+Two rules the renderer holds to. A metric a run did not record renders as a dash,
+never as zero -- "we never measured this" and "it was 0" are different claims.
+And no JavaScript and no CDN: hover detail rides on SVG `<title>`, and every
+chart is backed by a `<details>` table.
+
 ## tests
 
 ```bash
-.venv/bin/python -m pytest test_x_ingestion.py --timeout 5
-.venv-rec/bin/python -m pytest test_shortlist.py --timeout 5
+.venv/bin/python -m pytest test_x_ingestion.py test_reddit_scraper.py --timeout 5
+.venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
 ```
+
+`test_stats.py` needs the recommender venv; the digest-side status tests live in
+`test_x_ingestion.py` because `digest_stats` sits in `llm_summarizer`, which
+imports `openai`.
 
 Covers the failure modes: API outage, resume-from-cache, dedupe, the query-length
 cliff, link hygiene, and the cost ceiling.

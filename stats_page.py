@@ -178,17 +178,19 @@ def table(headers, rows, aligns=None):
     if not rows:
         return '<p class="muted">nothing recorded yet.</p>'
     aligns = aligns or ["l"] * len(headers)
-    head = "".join(
+    # a key/value table has no headers worth showing; an empty header row is
+    # just a stray rule across the card
+    head = "" if not any(headers) else "<thead><tr>" + "".join(
         f'<th class="{"num" if a == "n" else ""}">{esc(h)}</th>'
         for h, a in zip(headers, aligns)
-    )
+    ) + "</tr></thead>"
     body = ""
     for row in rows:
         body += "<tr>" + "".join(
             f'<td class="{"num" if a == "n" else ""}">{cell}</td>'
             for cell, a in zip(row, aligns)
         ) + "</tr>"
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return f"<table>{head}<tbody>{body}</tbody></table>"
 
 
 def details(label, body):
@@ -308,7 +310,7 @@ def bar_chart(items, total_label="", fmt=lambda v: f"{v:,.0f}"):
         out.append(f'<text x="{label_w + width + 8:.1f}" y="{y + 14}" font-size="11" '
                    f'fill="{TEXT_2}">{esc(fmt(value))}</text>')
     out.append("</svg>")
-    grid = table(["", "n"], [[esc(k), esc(fmt(v))] for k, v in items], ["l", "n"])
+    grid = table(["item", "n"], [[esc(k), esc(fmt(v))] for k, v in items], ["l", "n"])
     return "".join(out) + details("data", grid)
 
 
@@ -638,11 +640,16 @@ def render_recommender(rows):
                 pct(e.get("progress")) if e.get("progress") is not None else DASH]
                for e in evicted]
     evictions = (
-        '<h2>evicted tonight</h2><div class="card">'
+        '<h2>the outgoing batch</h2><div class="card">'
         f'<p class="sub">{len(evicted)} documents came off the shortlist to make room. '
         'What became of them is the feedback that trains tomorrow\'s model.</p>'
         + table(["document", "slot it came from", "outcome", "progress"], ev_rows,
-                ["l", "l", "l", "n"]) + '</div>'
+                ["l", "l", "l", "n"])
+        + '<p class="why" style="margin-top:.8rem">A "passed" here is not '
+          'automatically a negative label. A document evicted on the same day it '
+          'was added was never really offered, so it is excluded from training -- '
+          'otherwise the job would manufacture negatives out of its own '
+          'scheduling.</p></div>'
     )
 
     # -- live arms: the honest metric
@@ -672,7 +679,9 @@ def render_recommender(rows):
     )
 
     # -- overnight signals
-    signals = last.get("overnight") or {}
+    signals = last.get("overnight")
+    measured = signals is not None
+    signals = signals or {}
     sig_rows = [
         ["documents Readwise touched", num(signals.get("updated"))],
         ["newly rated <code>rate:good</code>", num(signals.get("rated_good"))],
@@ -685,10 +694,13 @@ def render_recommender(rows):
     reasons = (lab.get("by_reason") or {})
     overnight = (
         '<h2>signals captured overnight</h2><div class="card">'
-        f'<p class="sub">Since the previous sync at '
-        f'{esc(str(last.get("sync", {}).get("since") or "?")[:16].replace("T", " "))}. '
-        'These are what tonight\'s retrain saw that last night\'s did not.</p>'
-        + table(["", ""], sig_rows)
+        + (f'<p class="sub">Since the previous sync at '
+           f'{esc(str((last.get("sync") or {}).get("since") or "?")[:16].replace("T", " "))}. '
+           'These are what tonight\'s retrain saw that last night\'s did not.</p>'
+           if measured else
+           '<p class="sub">Not measured this run -- the sync was skipped, so the '
+           'store was never asked what changed. Zero here would have been a lie.</p>')
+        + (table(["", ""], sig_rows) if measured else "")
         + '<p class="sub" style="margin-top:1rem">the whole label set, by where it '
           'came from</p>'
         + bar_chart(sorted(reasons.items(), key=lambda kv: -kv[1]), " labels")

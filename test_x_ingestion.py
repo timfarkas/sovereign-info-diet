@@ -697,3 +697,87 @@ def test_a_corpus_that_fits_is_not_trimmed_at_all():
     s = LLMSummarizer(model_name="test")
     s.create_summary_prompt([], small, [])
     assert s.tweets_dropped == 0
+
+
+# -- the status page's view of a digest run ----------------------------------
+#
+# These live here rather than in test_stats.py because digest_stats is inside
+# llm_summarizer, which imports openai -- so they need the digest venv, and
+# test_stats.py runs under the recommender's.
+
+
+import config
+import stats_page
+import stats_store
+
+
+@pytest.fixture
+def paths(tmp_path, monkeypatch):
+    """Redirect both the history and the served pages into the tmp dir."""
+    monkeypatch.setattr(config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(config, "HTML_SERVE_DIR", str(tmp_path / "html"))
+    return tmp_path
+
+
+class FakeSummarizer:
+    model = "gpt-6-sol"
+    prompt_chars = 1000
+    tweets_dropped = 0
+    last_usage = {"input_tokens": 100, "cached_tokens": 0, "output_tokens": 10,
+                  "reasoning_tokens": 0, "cost_usd": 0.01}
+
+
+def digest_row(**kwargs):
+    from llm_summarizer import digest_stats
+    defaults = dict(
+        posts=[{"subreddit": "singularity", "comments": [1, 2]}],
+        tweets=[{"handle": "someone"}],
+        pages=[{"status": "ok"}, {"status": "skipped: HTTP 403"}],
+        summarizer=FakeSummarizer(), summary="<p>hi</p>",
+    )
+    defaults.update(kwargs)
+    return digest_stats(**defaults)
+
+
+def test_a_healthy_digest_run_flags_nothing():
+    assert digest_row()["problems"] == []
+    assert digest_row()["ok"] is True
+
+
+def test_a_stale_leg_is_flagged_rather_than_counted_as_a_quiet_day():
+    row = digest_row(x_fresh=False, x_note="x_data.json is 30h old")
+    assert any("no fresh X data" in p for p in row["problems"])
+
+
+def test_a_failed_subreddit_is_named():
+    row = digest_row(reddit_health={"failed": ["LocalLLaMA"]})
+    assert any("LocalLLaMA" in p for p in row["problems"])
+    assert row["reddit"]["failed"] == ["LocalLLaMA"]
+
+
+def test_blowing_the_cost_ceiling_is_flagged():
+    class Expensive(FakeSummarizer):
+        last_usage = dict(FakeSummarizer.last_usage, cost_usd=99.0)
+    row = digest_row(summarizer=Expensive())
+    assert any("ceiling" in p for p in row["problems"])
+
+
+def test_a_model_failure_is_not_recorded_as_a_successful_run():
+    row = digest_row(summary="Failed to generate summary: boom")
+    assert row["ok"] is False
+    assert any("model call failed" in p for p in row["problems"])
+
+
+def test_walled_pages_are_counted_apart_from_read_ones():
+    row = digest_row()
+    assert row["links"]["read"] == 1
+    assert row["links"]["walled"] == 1
+    assert row["links"]["by_status"] == {"read": 1, "skipped": 1}
+
+
+def test_a_subreddit_that_returned_nothing_still_appears_on_the_page(paths, monkeypatch):
+    """Zero posts from a configured subreddit is a finding, not an absence."""
+    monkeypatch.setattr(config, "SUBREDDITS", ["singularity", "LocalLLaMA"])
+    stats_store.record("digest", digest_row())
+    markup = stats_page.render_digest(stats_store.load("digest"))
+    assert "LocalLLaMA" in markup
