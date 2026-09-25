@@ -157,9 +157,29 @@ def read_health(path: str) -> Dict[str, Any]:
         return {}
 
 
+def twitter_spend(x_health) -> Dict[str, Any]:
+    """What the X leg cost, in credits and -- if the rate is configured -- dollars.
+
+    The rate is a config knob and flagged unverified on the page, because
+    twitterapi.io exposes a balance and never a price. Credits are measured;
+    dollars are a conversion.
+    """
+    from config import TWITTERAPI_CREDITS_PER_USD
+    used = (x_health or {}).get("credits_used")
+    rate = TWITTERAPI_CREDITS_PER_USD
+    return {
+        "credits_used": used,
+        "credits_remaining": (x_health or {}).get("credits_after"),
+        "credits_per_usd": rate,
+        "usd": (used / rate) if (used is not None and rate) else None,
+        "rate_verified": False,
+    }
+
+
 def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
                  reddit_health=None, x_fresh=True, reddit_fresh=True,
                  x_note="", reddit_note="", output_file=None,
+                 x_file=None, reddit_file=None,
                  link_stats=None) -> Dict[str, Any]:
     """One run's worth of numbers, as a plain dict, for the status page.
 
@@ -210,6 +230,7 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
             "sort_by": SORT_BY,
             "fresh": reddit_fresh,
             "note": reddit_note,
+            "file": str(reddit_file) if reddit_file else None,
             "health": reddit_health,
         },
         "x": {
@@ -217,7 +238,9 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
             "by_account": dict(Counter(t.get("handle") for t in tweets)),
             "fresh": x_fresh,
             "note": x_note,
+            "file": str(x_file) if x_file else None,
             "health": x_health,
+            "spend": twitter_spend(x_health),
         },
         "links": {
             "attempted": len(pages),
@@ -484,6 +507,7 @@ if __name__ == "__main__":
             reddit_health=read_health("extracts/reddit_health.json"),
             x_fresh=bool(x_file), reddit_fresh=bool(reddit_file),
             x_note=x_why, reddit_note=reddit_why,
+            x_file=x_file, reddit_file=reddit_file,
             output_file=output_file, link_stats=link_stats,
         )
         stats_store.record("digest", row)

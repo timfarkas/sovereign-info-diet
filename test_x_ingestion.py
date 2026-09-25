@@ -8,6 +8,7 @@ intermediate state, signal when the feed is sick, never surface a blocked link
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -781,3 +782,44 @@ def test_a_subreddit_that_returned_nothing_still_appears_on_the_page(paths, monk
     stats_store.record("digest", digest_row())
     markup = stats_page.render_digest(stats_store.load("digest"))
     assert "LocalLLaMA" in markup
+
+
+def test_the_credit_reading_waits_for_the_debit_to_settle(monkeypatch, tmp_path):
+    """twitterapi.io debits tens of seconds late; reading the balance straight
+    after the scrape reports zero spend, which is worse than reporting nothing."""
+    import config
+    import x_scraper
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "extracts").mkdir()
+
+    class _Spender(_NoNewScraper):
+        def scrape(self, *a, **k):
+            self.client.calls += 7          # the scrape hit the API
+            self._write_health(attempted=7, failed=0, tweets=1, accounts=1, capped=False)
+            return [{"id": "1", "handle": "karpathy"}]
+
+    scraper = _Spender(base_dir="extracts")
+    balances = iter([1_000_000, 850_000])
+    monkeypatch.setattr(scraper.client, "credits", lambda: next(balances))
+    monkeypatch.setattr(x_scraper, "XScraper", lambda *a, **k: scraper)
+    slept = []
+    monkeypatch.setattr(x_scraper.time, "sleep", slept.append)
+
+    assert x_scraper.main() == 0
+    assert slept == [config.TWITTERAPI_CREDIT_SETTLE_SECONDS]
+    health = json.loads(scraper.health_path.read_text())
+    assert health["credits_used"] == 150_000
+    assert health["credits_after"] == 850_000
+
+
+def test_a_run_that_made_no_calls_does_not_wait_around(monkeypatch, tmp_path):
+    """The wait exists to let a debit land. With no calls there is no debit --
+    and the balance read itself must not be mistaken for one."""
+    import x_scraper
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "extracts").mkdir()
+    monkeypatch.setattr(x_scraper, "XScraper",
+                        lambda *a, **k: _NoNewScraper(base_dir="extracts"))
+    monkeypatch.setattr(x_scraper.time, "sleep",
+                        lambda s: pytest.fail(f"slept {s}s with no API calls made"))
+    assert x_scraper.main() == 0

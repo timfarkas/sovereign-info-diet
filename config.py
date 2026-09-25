@@ -227,3 +227,16 @@ STATS_KEEP_RUNS = 180          # ~6 months of nightly rows, then the oldest fall
 HTML_SERVE_DIR = "/home/kyro/html_serve"
 DIGEST_PAGE = "ai-digest"      # -> http://192.168.2.6:8080/ai-digest/
 RECOMMENDER_PAGE = "recommender"
+
+# --- twitterapi.io spend ------------------------------------------------------
+# The API bills in credits and exposes only a balance, never a price. Measured
+# on 2026-09-25 by fetching a known number of tweets and watching the balance:
+# ~15 credits per tweet, and -- the part that matters -- the debit lands tens of
+# seconds AFTER the call returns, so reading the balance immediately reports
+# zero spend. Hence the settle wait.
+TWITTERAPI_CREDIT_SETTLE_SECONDS = 45
+# UNVERIFIED. twitterapi.io's own dashboard is the only source for this; 15
+# credits/tweet against their published $0.15/1k tweets implies 100k credits per
+# dollar, which is where this number comes from, but nobody has checked it
+# against an invoice. Set it to None to make the page show credits only.
+TWITTERAPI_CREDITS_PER_USD = 100_000
