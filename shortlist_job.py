@@ -251,9 +251,7 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
         swallowing it, so a broken page is loud in the log.
         """
         try:
-            import stats_page
-            import stats_store
-            import shortlist_stats
+            from html_status import stats_page, stats_store, shortlist_stats
             row = shortlist_stats.build(
                 store, cycle=cycle, dry_run=dry_run, chosen=chosen, trace=trace,
                 evicted_ids=old, label_stats=stats, holdout=metrics,
@@ -264,8 +262,13 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
                 problems=([] if metrics else
                           ["not enough held-out signal to score the model tonight"]),
             )
-            stats_store.record("shortlist", row)
-            log(f"stats: wrote {stats_page.render_recommender_page()}")
+            stats_store.record("shortlist", row)          # unconditional: cheap history
+            written = stats_page.render_recommender_page()  # opt-in: needs HTML_SERVE_DIR
+            if written:
+                log(f"stats: wrote {written}")
+            else:
+                log("stats: recorded to data/run_stats -- page rendering is off "
+                    "(set HTML_SERVE_DIR in .env to turn it on)")
         except Exception:
             import traceback
             log("stats: status page failed -- the cycle itself is unaffected:")

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Turns the run history in `stats_store` into two static HTML status pages.
 
+Rendering is opt-in -- see `enabled()` below. On a box with HTML_SERVE_DIR set
+to /home/kyro/html_serve, that means e.g.:
+
     http://192.168.2.6:8080/ai-digest/       -- the nightly digest
     http://192.168.2.6:8080/recommender/     -- the shortlist recommender
 
 Every rendered number comes out of the recorded rows, so the page can be
 rebuilt from history at any time without running either job:
 
-    .venv-rec/bin/python stats_page.py
+    .venv-rec/bin/python -m html_status.stats_page
 
 Design notes worth keeping:
 
@@ -36,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-import stats_store
+from . import stats_store
 
 # -- palette (validated dark steps -- see module docstring) -------------------
 SURFACE = "#1a1a19"
@@ -450,7 +453,12 @@ def load_dump(path):
         return None
     f = Path(path)
     if not f.is_absolute():
-        f = Path(__file__).resolve().parent / f
+        # Recorded paths (e.g. "extracts/x_data_....json") are relative to the
+        # project root, where run_pipeline.sh / run_shortlist.sh cd to before
+        # anything runs -- not to wherever this module happens to live.
+        # config.py's own location is the one anchor that is true regardless
+        # of how html_status/ is arranged.
+        f = Path(config.__file__).resolve().parent / f
     if not f.exists():
         return None
     try:
@@ -562,9 +570,9 @@ def page(title, subtitle, status, body, other):
 <footer>
   rendered {esc(generated)} &middot; <a href="{esc(other[0])}">{esc(other[1])}</a>
   &middot; <a href="../">all pages</a><br>
-  source: <code>~/projects/ai-news/stats_page.py</code>, history in
+  source: <code>html_status/stats_page.py</code>, history in
   <code>data/run_stats/*.jsonl</code>. Rebuild any time with
-  <code>python stats_page.py</code>.
+  <code>python -m html_status.stats_page</code>.
 </footer>
 </div></body></html>
 """
@@ -1067,6 +1075,17 @@ def render_recommender(rows):
 
 # -- writing ------------------------------------------------------------------
 
+def enabled():
+    """Whether the status pages are turned on: HTML_SERVE_DIR set in .env.
+
+    No default here is deliberate -- a fallback path would make the feature
+    silently on for anyone who clones the repo, which is the opposite of
+    opt-in. Recording to stats_store is unconditional and unaffected by this;
+    only writing an actual page is gated.
+    """
+    return bool(config.HTML_SERVE_DIR)
+
+
 def write_page(name, markup):
     target = Path(config.HTML_SERVE_DIR) / name
     target.mkdir(parents=True, exist_ok=True)
@@ -1076,19 +1095,32 @@ def write_page(name, markup):
 
 
 def render_digest_page():
+    """Write the digest page, or None if the status pages are disabled."""
+    if not enabled():
+        return None
     return write_page(config.DIGEST_PAGE, render_digest(stats_store.load("digest")))
 
 
 def render_recommender_page():
+    """Write the recommender page, or None if the status pages are disabled."""
+    if not enabled():
+        return None
     return write_page(config.RECOMMENDER_PAGE,
                       render_recommender(stats_store.load("shortlist")))
 
 
 def render_all():
+    if not enabled():
+        return []
     return [render_digest_page(), render_recommender_page()]
 
 
 if __name__ == "__main__":
+    if not enabled():
+        print("[stats] HTML_SERVE_DIR is not set in .env -- status pages are "
+              "disabled. Set it (e.g. HTML_SERVE_DIR=/home/kyro/html_serve) "
+              "to turn them on.")
+        sys.exit(0)
     for written in render_all():
         print(f"[stats] wrote {written}")
     sys.exit(0)

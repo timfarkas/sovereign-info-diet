@@ -499,8 +499,7 @@ if __name__ == "__main__":
     # digest does not go out -- but it prints the traceback rather than
     # swallowing it, so a broken page is loud in the log instead of invisible.
     try:
-        import stats_page
-        import stats_store
+        from html_status import stats_page, stats_store
         row = digest_stats(
             posts, tweets, pages, summarizer, summary,
             x_health=read_health("extracts/x_health.json"),
@@ -510,8 +509,13 @@ if __name__ == "__main__":
             x_file=x_file, reddit_file=reddit_file,
             output_file=output_file, link_stats=link_stats,
         )
-        stats_store.record("digest", row)
-        print(f"[stats] wrote {stats_page.render_digest_page()}")
+        stats_store.record("digest", row)          # unconditional: cheap history
+        written = stats_page.render_digest_page()    # opt-in: needs HTML_SERVE_DIR
+        if written:
+            print(f"[stats] wrote {written}")
+        else:
+            print("[stats] recorded to data/run_stats -- page rendering is off "
+                  "(set HTML_SERVE_DIR in .env to turn it on)")
     except Exception:
         import traceback
         print("[stats] status page failed -- the digest itself is unaffected:")

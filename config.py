@@ -2,6 +2,8 @@
 
 # Configuration for the digital info filter
 
+import os
+
 TIME_HORIZON_DAYS = 2   # look back this many days
 POSTS_TO_ANALYZE = 60   # reddit posts to scrape for analysis
 
@@ -220,12 +222,17 @@ MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold 
 
 # --- run stats and the status pages -----------------------------------------
 # Both jobs fail silently into a logfile; nobody reads a logfile. Every run
-# appends one JSON row here and re-renders a static page under html_serve, so
-# the state of both systems is one VPN URL away instead of one `grep` away.
-STATS_DIR = "/home/kyro/projects/ai-news/data/run_stats"
+# appends one JSON row to STATS_DIR -- that part is unconditional, cheap, and
+# useful history on its own. Turning it into a page is opt-in: set
+# HTML_SERVE_DIR (below) to a directory a webserver serves, and html_status/
+# renders into it after every run. Leave it unset and nothing under
+# html_status/ ever writes to disk. See the "status pages" section of
+# README.md for what it shows and how to view it.
+STATS_DIR = "data/run_stats"
 STATS_KEEP_RUNS = 180          # ~6 months of nightly rows, then the oldest fall off
-HTML_SERVE_DIR = "/home/kyro/html_serve"
-DIGEST_PAGE = "ai-digest"      # -> http://192.168.2.6:8080/ai-digest/
+
+HTML_SERVE_DIR = os.getenv("HTML_SERVE_DIR")  # e.g. /home/kyro/html_serve. Unset = off.
+DIGEST_PAGE = "ai-digest"      # -> <HTML_SERVE_DIR>/ai-digest/
 RECOMMENDER_PAGE = "recommender"
 
 # --- twitterapi.io spend ------------------------------------------------------

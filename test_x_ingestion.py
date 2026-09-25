@@ -708,8 +708,7 @@ def test_a_corpus_that_fits_is_not_trimmed_at_all():
 
 
 import config
-import stats_page
-import stats_store
+from html_status import stats_page, stats_store
 
 
 @pytest.fixture

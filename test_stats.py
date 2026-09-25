@@ -18,9 +18,7 @@ import pytest
 
 import config
 import recommender_model
-import shortlist_stats
-import stats_page
-import stats_store
+from html_status import shortlist_stats, stats_page, stats_store
 from recommender_store import Store
 
 NOW = datetime(2026, 9, 25, tzinfo=timezone.utc)
