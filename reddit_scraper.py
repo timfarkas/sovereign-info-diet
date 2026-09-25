@@ -133,7 +133,9 @@ class RedditScraper:
             # gallery post
             for j, item_id in enumerate(submission.media_metadata):
                 media = submission.media_metadata[item_id]
-                if 's' in media:
+                # gallery items that are gifs/videos carry an 's' preview dict too,
+                # but without a 'u' key -- only static images have one
+                if 's' in media and 'u' in media['s']:
                     img_url = media['s']['u'].replace('&amp;', '&')
                     img_url = img_url.replace('preview.redd.it', 'i.redd.it')
                     img_url = img_url.split('?')[0]
@@ -260,18 +262,25 @@ if __name__ == "__main__":
     scraper = RedditScraper()
     
     all_posts = []
+    failed_subreddits = []
     posts_per_sub = POSTS_TO_ANALYZE // len(SUBREDDITS)  # divide quota among subreddits
-    
+
     # scrape each subreddit
     for subreddit in SUBREDDITS:
         print(f"\n📊 Scraping r/{subreddit}...")
-        posts = scraper.scrape_subreddit(
-            subreddit, 
-            limit=posts_per_sub, 
-            sort=SORT_BY, 
-            condensed=True,
-            time_horizon_days=TIME_HORIZON_DAYS
-        )
+        try:
+            posts = scraper.scrape_subreddit(
+                subreddit,
+                limit=posts_per_sub,
+                sort=SORT_BY,
+                condensed=True,
+                time_horizon_days=TIME_HORIZON_DAYS
+            )
+        except Exception as e:
+            # one bad subreddit shouldn't cost the posts already scraped from the others
+            print(f"[reddit_scraper] r/{subreddit} failed: {e} -- skipping, keeping what's scraped so far")
+            failed_subreddits.append(subreddit)
+            continue
         all_posts.extend(posts)
     
     # save to json
@@ -292,3 +301,8 @@ if __name__ == "__main__":
     print(f"\nPosts by subreddit:")
     for sub, count in sub_counts.items():
         print(f"  r/{sub}: {count}")
+
+    if failed_subreddits:
+        import sys
+        print(f"\n[reddit_scraper] failed subreddits: {', '.join(failed_subreddits)}")
+        sys.exit(1)
