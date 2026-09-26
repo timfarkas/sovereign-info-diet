@@ -31,3 +31,6 @@ config/secrets.yaml
 # Logs
 *.log
 logs/
+# Recommender
+.venv-rec/
+.model-cache/

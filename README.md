@@ -1,20 +1,35 @@
 # digital info filter
 
-X/Twitter + Reddit → linked-page enrichment → llm gate → daily digest email.
+Two independent nightly jobs sharing one repo and one `.env`:
 
-## setup
+- **`digest/`** — X/Twitter + Reddit → linked-page enrichment → llm gate → daily
+  digest email.
+- **`recommender/`** — ranks the Readwise Reader firehose and tags the best few
+  `shortlist`, documented in its own section below.
+
+They live in separate folders on purpose: separate dependencies (onnxruntime
+and scikit-learn have no business near the digest), separate venvs, and
+separate cron slots an hour apart so the two never hold memory at the same
+time on a 3.7 GB box.
+
+`.env` lives at the repo root and is shared by both. It needs:
+`HOME_DIR` (absolute path to your home directory -- used to build absolute
+paths for cron, since cron does not run with your shell's `$HOME`),
+`REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
+`EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
+
+## digest/
+
 ```bash
+cd digest
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-`.env` needs: `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`,
-`OPENAI_API_KEY`, `EMAIL_FROM`, `EMAIL_TO`.
+### the pipeline
 
-## the pipeline
-
-`run_pipeline.sh` (cron, 01:00 UTC) runs four legs:
+`digest/run_pipeline.sh` (cron, 01:00 UTC) runs four legs:
 
 | leg | what it does |
 |---|---|
@@ -27,9 +42,9 @@ Either source leg may fail without killing the run; the summarizer refuses to ma
 an empty digest and stamps a maintenance banner on the mail when a leg is
 unhealthy, so breakage shows up in the inbox rather than in silence.
 
-## knobs
+### knobs
 
-All in `config.py`. The ones that move cost or shape:
+All in `digest/config.py`. The ones that move cost or shape:
 
 - `SUMMARY_MODEL` / `MODEL_PRICING` / `SUMMARY_COST_CEILING_USD` — every run prints
   its measured cost and warns past the ceiling.
@@ -40,7 +55,7 @@ All in `config.py`. The ones that move cost or shape:
 - `X_MAX_QUERY_CHARS` — leave it under ~450. X search silently returns zero
   results for over-long queries instead of erroring.
 
-## conventions worth knowing
+### conventions worth knowing
 
 - **No social-platform links in the output.** x.com / reddit.com / t.co links are
   stripped from the model's HTML (`strip_blocked_links`) and never fetched
@@ -48,10 +63,80 @@ All in `config.py`. The ones that move cost or shape:
 - **Fetched pages are untrusted text.** They enter the prompt fenced and labelled
   as data, not instruction.
 
+## recommender/
+
+Ranks the Readwise Reader firehose and tags the best few `shortlist`, which is
+the tag behind Reader's own "⭐ Shortlist" view. It has its own venv and its own
+cron slot on purpose -- see `recommender/run_shortlist.sh`.
+
+```bash
+cd recommender
+uv venv .venv-rec
+uv pip install --python .venv-rec/bin/python -r requirements.txt
+./run_shortlist.sh --dry-run     # decides everything, writes nothing
+```
+
+### the cycle
+
+`sync -> embed -> train -> select -> write`, nightly at 02:00 UTC.
+
+| stage | what it does |
+|---|---|
+| sync | `list/?updatedAfter=` deltas into `data/recommender.sqlite3` |
+| embed | bge-small ONNX, **on this box**, nothing sent to an API |
+| train | logistic regression on frozen embeddings, retrained from scratch each run |
+| select | ranks fresh feed items, plus resurfaced slots from the `later` backlog |
+| write | one `bulk_update` adding/removing the `shortlist` tag |
+
+### where the labels come from
+
+Nobody has to sit down and rate a training set. The archive already is one, but
+absence of a positive is deliberately *not* the same as a negative -- most
+negative reasons only fire when there is contextual evidence he was actually
+looking at things that day, so a quiet week doesn't get read as him disliking
+everything in it:
+
+| reason | signal | weight |
+|---|---|---|
+| `rated` | he tagged it `rate:good` / `rate:bad` -- overrides everything else | 3.0 |
+| `favorited` | `favorite` / `important` tag | 2.0 |
+| `read` | archived with real reading progress | 1.5 |
+| `opened` | opened but not finished | 1.0 |
+| `passed` | shortlisted, shown, evicted unopened -- only on a day he read more than half of that day's shortlist | 0.2 |
+| `archived_unread` | archived without ever opening it -- an explicit "no" | 0.3 |
+| `ignored` | stale, never-opened feed item -- only on a day he also archived something else unread | 0.1 |
+
+Rating tags are the strongest signal and the one worth leaning on going
+forward; the rest exist so the model has something to learn from before enough
+ratings accumulate.
+
+### two things that are easy to get wrong
+
+- **Age must never be a feature.** Old documents are archived, archived means read,
+  so age predicts the label almost perfectly and yields a model that ranks by "is
+  old" while scoring beautifully. Recency is applied at selection time instead.
+- **Ten slots: 7 from fresh feed, 3 resurfaced from the backlog, and one unranked
+  random pick inside each of those two groups.** Without exploration the model only
+  ever sees its own picks and the feedback loop eats itself. Each random arm is drawn
+  from the *same* pool as the ranked picks it will be compared against -- `later`
+  items differ from fresh feed by age and by having already survived a selection
+  step, so a random draw from one pool says nothing about ranking in the other.
+
+Known limits of the offline number, worth keeping in view: labels are derived from
+the corpus *as it stands now*, so a document read yesterday counts as a positive even
+in the training half of an older time split, and a recently arrived item can be
+counted as ignored before it had a fair chance. It measures "would he open this",
+not "was he glad he read it". The live ranked-vs-random comparison is the honest
+metric; the offline one is a smoke test.
+
+The job only ever removes the `shortlist` tag from documents it added itself
+(every add and eviction is logged), so anything shortlisted by hand is left alone.
+
 ## tests
 
 ```bash
-.venv/bin/python -m pytest test_x_ingestion.py --timeout 5
+cd digest && .venv/bin/python -m pytest test_x_ingestion.py --timeout 5
+cd recommender && .venv-rec/bin/python -m pytest test_shortlist.py --timeout 5
 ```
 
 Covers the failure modes: API outage, resume-from-cache, dedupe, the query-length

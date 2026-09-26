@@ -4,9 +4,12 @@
 # an empty digest if BOTH produced nothing, and stamps a maintenance banner on
 # the mail when a leg is unhealthy -- so Tim learns about breakage from his
 # inbox rather than from the digest quietly not arriving.
-cd /home/kyro/projects/ai-news
-export DOTENV_PATH=/home/kyro/projects/ai-news/.env
-PY=/home/kyro/projects/ai-news/.venv/bin/python
+# Resolved relative to this script, not a hardcoded home dir, so the repo runs
+# the same on any box it's cloned onto.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+export DOTENV_PATH="$SCRIPT_DIR/../.env"
+PY="$SCRIPT_DIR/.venv/bin/python"
 
 echo "=== $(date -u +%FT%TZ) pipeline start ==="
 
