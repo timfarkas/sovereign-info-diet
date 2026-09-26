@@ -1,21 +1,36 @@
 # digital info filter
 
-X/Twitter + Reddit → linked-page enrichment → llm gate → daily digest email.
+Two independent nightly jobs sharing one repo and one `.env`:
 
-## setup
+- **`digest/`** — X/Twitter + Reddit → linked-page enrichment → llm gate → daily
+  digest email.
+- **`recommender/`** — ranks the Readwise Reader firehose and tags the best few
+  `shortlist`, documented in its own section below.
+
+They live in separate folders on purpose: separate dependencies (onnxruntime
+and scikit-learn have no business near the digest), separate venvs, and
+separate cron slots an hour apart so the two never hold memory at the same
+time on a 3.7 GB box.
+
+`.env` lives at the repo root and is shared by both. It needs:
+`HOME_DIR` (absolute path to your home directory -- used to build absolute
+paths for cron, since cron does not run with your shell's `$HOME`),
+`REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
+`EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
+`HTML_SERVE_DIR` is optional, for both -- see "status page" below.
+
+## digest/
+
 ```bash
+cd digest
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-`.env` needs: `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`,
-`OPENAI_API_KEY`, `EMAIL_FROM`, `EMAIL_TO`. `HTML_SERVE_DIR` is optional -- see
-"status pages" below.
+### the pipeline
 
-## the pipeline
-
-`run_pipeline.sh` (cron, 01:00 UTC) runs four legs:
+`digest/run_pipeline.sh` (cron, 01:00 UTC) runs four legs:
 
 | leg | what it does |
 |---|---|
@@ -28,9 +43,9 @@ Either source leg may fail without killing the run; the summarizer refuses to ma
 an empty digest and stamps a maintenance banner on the mail when a leg is
 unhealthy, so breakage shows up in the inbox rather than in silence.
 
-## knobs
+### knobs
 
-All in `config.py`. The ones that move cost or shape:
+All in `digest/config.py`. The ones that move cost or shape:
 
 - `SUMMARY_MODEL` / `MODEL_PRICING` / `SUMMARY_COST_CEILING_USD` — every run prints
   its measured cost and warns past the ceiling.
@@ -41,7 +56,7 @@ All in `config.py`. The ones that move cost or shape:
 - `X_MAX_QUERY_CHARS` — leave it under ~450. X search silently returns zero
   results for over-long queries instead of erroring.
 
-## conventions worth knowing
+### conventions worth knowing
 
 - **No social-platform links in the output.** x.com / reddit.com / t.co links are
   stripped from the model's HTML (`strip_blocked_links`) and never fetched
@@ -49,19 +64,18 @@ All in `config.py`. The ones that move cost or shape:
 - **Fetched pages are untrusted text.** They enter the prompt fenced and labelled
   as data, not instruction.
 
-## the readwise shortlist recommender
+## recommender/
 
-A second, independent job: it ranks the Readwise Reader firehose and tags the best
-few `shortlist`, which is the tag behind Reader's own "⭐ Shortlist" view. It has
-its own venv and its own cron slot on purpose -- see `run_shortlist.sh`.
+Ranks the Readwise Reader firehose and tags the best few `shortlist`, which is
+the tag behind Reader's own "⭐ Shortlist" view. It has its own venv and its own
+cron slot on purpose -- see `recommender/run_shortlist.sh`.
 
 ```bash
+cd recommender
 uv venv .venv-rec
-uv pip install --python .venv-rec/bin/python fastembed scikit-learn requests python-dotenv pytest pytest-timeout
+uv pip install --python .venv-rec/bin/python -r requirements.txt
 ./run_shortlist.sh --dry-run     # decides everything, writes nothing
 ```
-
-`.env` needs `READWISE_API_KEY` (readwise.io/access_token).
 
 ### the cycle
 
@@ -77,11 +91,25 @@ uv pip install --python .venv-rec/bin/python fastembed scikit-learn requests pyt
 
 ### where the labels come from
 
-Nobody has to sit down and rate a training set. The archive already is one:
-documents that got archived with real reading progress are positives, and stale
-feed items that were never opened are (noisy, down-weighted) negatives. Rating
-tags -- `rate:good` / `rate:bad` -- are the strongest signal and override
-behaviour, but they are a refinement, not a prerequisite.
+Nobody has to sit down and rate a training set. The archive already is one, but
+absence of a positive is deliberately *not* the same as a negative -- most
+negative reasons only fire when there is contextual evidence he was actually
+looking at things that day, so a quiet week doesn't get read as him disliking
+everything in it:
+
+| reason | signal | weight |
+|---|---|---|
+| `rated` | he tagged it `rate:good` / `rate:bad` -- overrides everything else | 3.0 |
+| `favorited` | `favorite` / `important` tag | 2.0 |
+| `read` | archived with real reading progress | 1.5 |
+| `opened` | opened but not finished | 1.0 |
+| `passed` | shortlisted, shown, evicted unopened -- only on a day he read more than half of that day's shortlist | 0.2 |
+| `archived_unread` | archived without ever opening it -- an explicit "no" | 0.3 |
+| `ignored` | stale, never-opened feed item -- only on a day he also archived something else unread | 0.1 |
+
+Rating tags are the strongest signal and the one worth leaning on going
+forward; the rest exist so the model has something to learn from before enough
+ratings accumulate.
 
 ### two things that are easy to get wrong
 
@@ -105,7 +133,7 @@ metric; the offline one is a smoke test.
 The job only ever removes the `shortlist` tag from documents it added itself
 (every add and eviction is logged), so anything shortlisted by hand is left alone.
 
-## status pages
+## status page
 
 Every run of either job appends one JSON row to `data/run_stats/`. That part is
 unconditional -- cheap, and useful history on its own. Turning it into a page is
@@ -129,14 +157,17 @@ What each page shows:
   outgoing batch with his explicit verdict, ranked-vs-random measured live, and
   the signals that arrived overnight
 
-`html_status/` is its own package: `stats_store.py` is the storage (append-only
-jsonl, trimmed to `STATS_KEEP_RUNS`), `stats_page.py` is the renderer, and
-`shortlist_stats.py` is the recommender-specific analysis (live arms, overnight
-signals, score attribution) that feeds the recommender page's row. Rebuild both
-pages from history alone, without running either job:
+`html_status/` sits at the repo root, shared by both `digest/` and
+`recommender/` -- it is deliberately independent of either job's own
+`config.py`. `stats_store.py` is the storage (append-only jsonl, trimmed to
+`STATS_KEEP_RUNS`), `stats_page.py` is the renderer. `shortlist_stats.py`
+(recommender-specific analysis: live arms, overnight signals, score
+attribution) lives in `recommender/` instead, since it's tightly coupled to
+`recommender_model.py`. Rebuild both pages from history alone, without running
+either job:
 
 ```bash
-.venv-rec/bin/python -m html_status.stats_page
+python -m html_status.stats_page
 ```
 
 (prints a one-line note and exits instead if `HTML_SERVE_DIR` is unset)
@@ -157,13 +188,11 @@ chart is backed by a `<details>` table.
 ## tests
 
 ```bash
-.venv/bin/python -m pytest test_x_ingestion.py test_reddit_scraper.py --timeout 5
-.venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
+cd digest && .venv/bin/python -m pytest test_x_ingestion.py --timeout 5
+cd recommender && .venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
 ```
 
-`test_stats.py` needs the recommender venv; the digest-side status tests live in
-`test_x_ingestion.py` because `digest_stats` sits in `llm_summarizer`, which
-imports `openai`.
-
 Covers the failure modes: API outage, resume-from-cache, dedupe, the query-length
-cliff, link hygiene, and the cost ceiling.
+cliff, link hygiene, and the cost ceiling. `test_stats.py` needs the recommender
+venv; the digest-side status tests live in `digest/test_x_ingestion.py` because
+`digest_stats` sits in `llm_summarizer.py`, which imports `openai`.

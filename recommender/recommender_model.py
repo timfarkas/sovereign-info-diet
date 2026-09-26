@@ -44,10 +44,15 @@ def _tags(doc):
     return set(raw or [])
 
 
-def label_for(doc, evicted_unopened=False, now=None):
+def label_for(doc, evicted_unopened=False, cycle_read_fraction=None, shelved_days=(), now=None):
     """(y, weight_key) for one document, or None when it carries no usable signal.
 
     Ordered strongest signal first; the first rule that matches wins.
+
+    `cycle_read_fraction` and `shelved_days` supply the day-level context behind
+    the two "he just didn't have time" cases below -- callers that don't have a
+    store handy (tests, mostly) can omit them and get the conservative, no-context
+    answer instead of a fabricated negative.
     """
     now = now or datetime.now(timezone.utc)
     tags = _tags(doc)
@@ -66,7 +71,15 @@ def label_for(doc, evicted_unopened=False, now=None):
     if opened and words_read >= config.OPENED_WORDS:
         return 1, "opened"
     if evicted_unopened and not opened:
-        return 0, "passed"
+        # A day he read most of what was shown makes skipping this one a real
+        # signal. A quiet day says nothing -- he just didn't have time, and
+        # treating it as rejection would manufacture a negative out of his
+        # schedule rather than his taste.
+        if cycle_read_fraction is not None and cycle_read_fraction > config.CYCLE_READ_MAJORITY:
+            return 0, "passed"
+        return None
+    if doc.get("location") == "archive" and not opened:
+        return 0, "archived_unread"
     if opened:
         # Opened and barely read. Could be a bounce, could be a save for later --
         # genuinely ambiguous, so it stays out of training.
@@ -77,16 +90,29 @@ def label_for(doc, evicted_unopened=False, now=None):
         and saved
         and saved < now - timedelta(days=config.FEED_STALE_DAYS)
     ):
-        return 0, "ignored"
+        # Same logic as the shortlist case above, applied to the whole feed
+        # history: only a signal on days he was actually shelving things, else
+        # the firehose simply outran him.
+        if saved.date().isoformat() in shelved_days:
+            return 0, "ignored"
+        return None
     return None
 
 
 def derive_labels(store, now=None):
-    """{doc_id: (y, weight)} across the whole corpus."""
-    evicted = _matured_evictions(store)
+    """{doc_id: (y, weight, reason)} across the whole corpus."""
+    matured, added_cycle = _shortlist_history(store)
+    cycle_fraction = _cycle_read_fractions(store, added_cycle)
+    shelved_days = _shelved_days(store)
     labels = {}
     for doc in store.documents():
-        result = label_for(doc, evicted_unopened=doc["id"] in evicted, now=now)
+        result = label_for(
+            doc,
+            evicted_unopened=doc["id"] in matured,
+            cycle_read_fraction=cycle_fraction.get(added_cycle.get(doc["id"])),
+            shelved_days=shelved_days,
+            now=now,
+        )
         if result is None:
             continue
         y, reason = result
@@ -94,8 +120,8 @@ def derive_labels(store, now=None):
     return labels
 
 
-def _matured_evictions(store):
-    """Evictions that count as evidence he passed on something.
+def _shortlist_history(store):
+    """(matured_evicted_doc_ids, {doc_id: first_added_cycle}) from the event log.
 
     A document evicted on the same day it was added was never really offered --
     that happens when the job runs twice in one night -- and reading it as a
@@ -104,13 +130,47 @@ def _matured_evictions(store):
     added = {}
     matured = set()
     for event in store.events():
-        if event["action"] == "added":
+        if event["action"] == "added" and event["doc_id"] not in added:
             added[event["doc_id"]] = event["cycle"]
         elif event["action"] == "evicted":
             first_seen = added.get(event["doc_id"])
             if first_seen and event["cycle"] > first_seen:
                 matured.add(event["doc_id"])
-    return matured
+    return matured, added
+
+
+def _cycle_read_fractions(store, added_cycle):
+    """{cycle: fraction of that cycle's shortlist that was actually read}."""
+    by_cycle = {}
+    for doc_id, cycle in added_cycle.items():
+        by_cycle.setdefault(cycle, []).append(doc_id)
+    docs = {d["id"]: d for d in store.documents()}
+    fractions = {}
+    for cycle, doc_ids in by_cycle.items():
+        read = 0
+        for doc_id in doc_ids:
+            d = docs.get(doc_id)
+            if not d:
+                continue
+            progress = d.get("reading_progress") or 0.0
+            words_read = progress * (d.get("word_count") or 0)
+            if words_read >= config.READ_WORDS or progress >= config.READ_PROGRESS:
+                read += 1
+        fractions[cycle] = read / len(doc_ids)
+    return fractions
+
+
+def _shelved_days(store):
+    """Calendar dates (by saved_at) with at least one feed item archived without
+    ever being opened -- evidence he was actually triaging the feed that day."""
+    days = set()
+    for d in store.documents(location="archive"):
+        if d.get("first_opened_at"):
+            continue
+        saved = _parse(d.get("saved_at"))
+        if saved:
+            days.add(saved.date().isoformat())
+    return days
 
 
 def features(doc, vector):

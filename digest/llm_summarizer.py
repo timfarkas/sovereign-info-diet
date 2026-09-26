@@ -164,13 +164,14 @@ def twitter_spend(x_health) -> Dict[str, Any]:
     twitterapi.io exposes a balance and never a price. Credits are measured;
     dollars are a conversion.
     """
-    from config import TWITTERAPI_CREDITS_PER_USD
+    from config import TWITTERAPI_CREDIT_SETTLE_SECONDS, TWITTERAPI_CREDITS_PER_USD
     used = (x_health or {}).get("credits_used")
     rate = TWITTERAPI_CREDITS_PER_USD
     return {
         "credits_used": used,
         "credits_remaining": (x_health or {}).get("credits_after"),
         "credits_per_usd": rate,
+        "settle_seconds": TWITTERAPI_CREDIT_SETTLE_SECONDS,
         "usd": (used / rate) if (used is not None and rate) else None,
         "rate_verified": False,
     }
@@ -499,6 +500,11 @@ if __name__ == "__main__":
     # digest does not go out -- but it prints the traceback rather than
     # swallowing it, so a broken page is loud in the log instead of invisible.
     try:
+        import sys
+        # html_status/ is a repo-root sibling of this folder, not a dependency
+        # installed anywhere on sys.path -- add the root once, here, rather
+        # than assuming whoever invoked this script already did.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from html_status import stats_page, stats_store
         row = digest_stats(
             posts, tweets, pages, summarizer, summary,
@@ -506,7 +512,11 @@ if __name__ == "__main__":
             reddit_health=read_health("extracts/reddit_health.json"),
             x_fresh=bool(x_file), reddit_fresh=bool(reddit_file),
             x_note=x_why, reddit_note=reddit_why,
-            x_file=x_file, reddit_file=reddit_file,
+            # Absolute: this process's cwd is digest/, and html_status/ lives a
+            # level up with no way to know that on its own -- resolve here,
+            # once, rather than making the shared renderer guess an anchor.
+            x_file=str(Path(x_file).resolve()) if x_file else None,
+            reddit_file=str(Path(reddit_file).resolve()) if reddit_file else None,
             output_file=output_file, link_stats=link_stats,
         )
         stats_store.record("digest", row)          # unconditional: cheap history

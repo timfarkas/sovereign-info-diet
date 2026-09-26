@@ -18,7 +18,9 @@ import pytest
 
 import config
 import recommender_model
-from html_status import shortlist_stats, stats_page, stats_store
+import shortlist_stats
+from html_status import stats_page, stats_store
+from html_status import config as html_status_config
 from recommender_store import Store
 
 NOW = datetime(2026, 9, 25, tzinfo=timezone.utc)
@@ -55,9 +57,14 @@ def store(tmp_path):
 
 @pytest.fixture
 def paths(tmp_path, monkeypatch):
-    """Redirect both the history and the served pages into the tmp dir."""
-    monkeypatch.setattr(config, "STATS_DIR", str(tmp_path / "stats"))
-    monkeypatch.setattr(config, "HTML_SERVE_DIR", str(tmp_path / "html"))
+    """Redirect both the history and the served pages into the tmp dir.
+
+    STATS_DIR / HTML_SERVE_DIR live in html_status/config.py, not this
+    folder's own config.py -- html_status/ is shared and deliberately
+    independent of either job's configuration.
+    """
+    monkeypatch.setattr(html_status_config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(html_status_config, "HTML_SERVE_DIR", str(tmp_path / "html"))
     return tmp_path
 
 

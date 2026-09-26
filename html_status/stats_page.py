@@ -38,8 +38,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import config
-from . import stats_store
+from . import config, stats_store
 
 # -- palette (validated dark steps -- see module docstring) -------------------
 SURFACE = "#1a1a19"
@@ -448,17 +447,17 @@ def why_this_score(attr):
 # and the digest are reading literally the same bytes.
 
 def load_dump(path):
-    """A recorded source dump, or None if it has been cleaned up since."""
+    """A recorded source dump, or None if it has been cleaned up since.
+
+    `path` is expected absolute -- the caller (digest/llm_summarizer.py) runs
+    with cwd=digest/ and resolves it before recording, since html_status/ lives
+    a level up and has no way to know which job's folder a relative path was
+    written from. A relative path is still accepted, resolved against the
+    current process's cwd, purely as a defensive fallback.
+    """
     if not path:
         return None
     f = Path(path)
-    if not f.is_absolute():
-        # Recorded paths (e.g. "extracts/x_data_....json") are relative to the
-        # project root, where run_pipeline.sh / run_shortlist.sh cd to before
-        # anything runs -- not to wherever this module happens to live.
-        # config.py's own location is the one anchor that is true regardless
-        # of how html_status/ is arranged.
-        f = Path(config.__file__).resolve().parent / f
     if not f.exists():
         return None
     try:
@@ -477,8 +476,7 @@ def scrub_platform_urls(text):
     and still a nudge back toward the platform. The expanded destinations are
     carried separately in each post's external links, so nothing is lost.
     """
-    from x_scraper import is_blocked_link
-    return BARE_URL.sub(lambda m: "" if is_blocked_link(m.group(0)) else m.group(0),
+    return BARE_URL.sub(lambda m: "" if _is_blocked_link(m.group(0)) else m.group(0),
                         text or "")
 
 
@@ -488,10 +486,27 @@ def clip(text, limit):
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
 
+# Duplicated from digest/x_scraper.py's is_blocked_link/BLOCKED_LINK_DOMAINS
+# rather than imported: html_status/ is shared by both jobs and deliberately
+# has no path into either one's folder, and this is small and dependency-free
+# enough that keeping two copies in sync beats reaching across the boundary.
+_BLOCKED_LINK_DOMAINS = (
+    "x.com", "twitter.com", "t.co", "mobile.twitter.com",
+    "reddit.com", "redd.it", "redditmedia.com",
+)
+
+
+def _is_blocked_link(url):
+    if not url:
+        return True
+    host = url.split("//", 1)[-1].split("/", 1)[0].split("@")[-1].split(":")[0].lower()
+    host = host[4:] if host.startswith("www.") else host
+    return any(host == d or host.endswith("." + d) for d in _BLOCKED_LINK_DOMAINS)
+
+
 def external_links(urls):
     """Only links that leave the walled platforms -- the rest are dead to him."""
-    from x_scraper import is_blocked_link
-    keep = [u for u in (urls or []) if not is_blocked_link(u)]
+    keep = [u for u in (urls or []) if not _is_blocked_link(u)]
     if not keep:
         return ""
     return " ".join(f'<a href="{esc(u)}">{esc(u.split("//")[-1][:60])}</a>'
@@ -730,11 +745,12 @@ def render_digest(rows):
            f'twitterapi.io balance is good for about <strong>{runs_left:,.0f} more '
            f'runs</strong>.</p>' if runs_left else "")
         + (f'<p class="why">The credit count is measured -- balance before minus '
-           f'balance after, with a {config.TWITTERAPI_CREDIT_SETTLE_SECONDS}s settle '
+           f'balance after, with a {num(spend.get("settle_seconds"))}s settle '
            f'wait because the debit lands late. The dollar figure is a conversion at '
-           f'{rate:,.0f} credits per dollar from <code>config.py</code>, and that rate '
-           f'is <strong>unverified</strong> -- check it against a twitterapi.io invoice '
-           f'and fix the constant if it is wrong.</p>' if rate and x_usd is not None
+           f'{rate:,.0f} credits per dollar from <code>digest/config.py</code>, and '
+           f'that rate is <strong>unverified</strong> -- check it against a '
+           f'twitterapi.io invoice and fix the constant if it is wrong.</p>'
+           if rate and x_usd is not None
            else '<p class="why">twitterapi.io spend is not recorded for this run. '
                 'It is measured from the balance before and after the scrape, so it '
                 'appears from the first run after that instrumentation landed.</p>')

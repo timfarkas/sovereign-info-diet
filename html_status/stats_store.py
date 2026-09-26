@@ -16,7 +16,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import config
+from . import config
 
 
 def _path(kind):

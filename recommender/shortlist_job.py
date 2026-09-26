@@ -251,7 +251,16 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
         swallowing it, so a broken page is loud in the log.
         """
         try:
-            from html_status import stats_page, stats_store, shortlist_stats
+            import sys
+            from pathlib import Path
+            # html_status/ is a repo-root sibling of this folder, not a
+            # dependency installed anywhere on sys.path -- add the root once,
+            # here, rather than assuming whoever invoked this script already
+            # did. shortlist_stats itself lives right here in recommender/, so
+            # it needs no path help -- same-directory import, same as config.
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from html_status import stats_page, stats_store
+            import shortlist_stats
             row = shortlist_stats.build(
                 store, cycle=cycle, dry_run=dry_run, chosen=chosen, trace=trace,
                 evicted_ids=old, label_stats=stats, holdout=metrics,

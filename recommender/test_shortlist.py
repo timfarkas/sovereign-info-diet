@@ -18,6 +18,7 @@ import pytest
 import config
 import recommender_model
 import shortlist_job
+from html_status import config as html_status_config
 from readwise_client import ReadwiseClient, ReadwiseError, tag_names
 from recommender_store import Store
 
@@ -166,7 +167,7 @@ def test_missing_embeddings_only_lists_what_is_actually_missing(store):
         ({"tags": {"favorite": {}}}, (1, "favorited")),
         ({"location": "archive", "reading_progress": 0.9}, (1, "read")),
         ({"first_opened_at": iso(2), "reading_progress": 0.2}, (1, "opened")),
-        ({"location": "feed", "saved_at": iso(30)}, (0, "ignored")),
+        ({"location": "archive"}, (0, "archived_unread")),
     ],
 )
 def test_each_labelling_rule_fires(kwargs, expected):
@@ -208,10 +209,37 @@ def test_deliberately_finishing_a_short_post_still_counts():
     ) == (1, "read")
 
 
-def test_a_shortlisted_document_he_never_opened_becomes_a_negative():
+def test_a_shortlisted_document_he_never_opened_becomes_a_negative_on_a_day_he_kept_up():
+    assert recommender_model.label_for(
+        doc("x", saved_at=iso(1)), evicted_unopened=True, cycle_read_fraction=0.8, now=NOW
+    ) == (0, "passed")
+
+
+def test_skipping_a_shortlisted_document_on_a_quiet_day_is_not_evidence_of_anything():
+    """He mostly didn't read that day's list either -- he was busy, not unimpressed."""
+    assert recommender_model.label_for(
+        doc("x", saved_at=iso(1)), evicted_unopened=True, cycle_read_fraction=0.4, now=NOW
+    ) is None
     assert recommender_model.label_for(
         doc("x", saved_at=iso(1)), evicted_unopened=True, now=NOW
-    ) == (0, "passed")
+    ) is None
+
+
+def test_ignoring_a_stale_feed_item_is_a_negative_only_on_a_day_he_was_shelving_things():
+    shelved_day = (NOW - timedelta(days=30)).date().isoformat()
+    assert recommender_model.label_for(
+        doc("x", location="feed", saved_at=iso(30)), shelved_days={shelved_day}, now=NOW
+    ) == (0, "ignored")
+
+
+def test_a_stale_feed_item_is_neutral_when_nothing_else_was_shelved_that_day():
+    """No evidence he was even triaging the feed -- the firehose outran him."""
+    assert recommender_model.label_for(
+        doc("x", location="feed", saved_at=iso(30)), shelved_days=set(), now=NOW
+    ) is None
+    assert recommender_model.label_for(
+        doc("x", location="feed", saved_at=iso(30)), now=NOW
+    ) is None
 
 
 def test_rating_tags_outrank_behaviour(store):
@@ -222,11 +250,33 @@ def test_rating_tags_outrank_behaviour(store):
 
 
 def test_derive_labels_uses_the_eviction_log(store):
-    stock(store, [doc("a", saved_at=iso(1))])
+    """A day he mostly kept up with the shortlist: skipping this one is real signal."""
+    stock(
+        store,
+        [
+            doc("a", saved_at=iso(1)),
+            doc("b", saved_at=iso(1), reading_progress=0.9),
+            doc("c", saved_at=iso(1), reading_progress=0.9),
+        ],
+    )
     assert "a" not in recommender_model.derive_labels(store, now=NOW)
     store.log_event("a", "added", "2026-09-20")
+    store.log_event("b", "added", "2026-09-20")
+    store.log_event("c", "added", "2026-09-20")
     store.log_event("a", "evicted", "2026-09-21")
-    assert recommender_model.derive_labels(store, now=NOW)["a"][0] == 0
+    assert recommender_model.derive_labels(store, now=NOW)["a"] == (
+        0,
+        config.LABEL_WEIGHTS["passed"],
+        "passed",
+    )
+
+
+def test_derive_labels_stays_neutral_on_a_day_nothing_much_got_read(store):
+    stock(store, [doc("a", saved_at=iso(1)), doc("b", saved_at=iso(1))])
+    store.log_event("a", "added", "2026-09-20")
+    store.log_event("b", "added", "2026-09-20")
+    store.log_event("a", "evicted", "2026-09-21")
+    assert "a" not in recommender_model.derive_labels(store, now=NOW)
 
 
 def test_a_same_day_eviction_is_not_evidence_he_passed(store):
@@ -438,12 +488,12 @@ def test_a_dry_run_writes_nothing(store, tmp_path, monkeypatch):
     monkeypatch.setattr(shortlist_job, "embed_missing",
                         lambda *a, **k: {"pending": 0, "embedded": 0,
                                          "dropped_superseded": 0})
-    monkeypatch.setattr(config, "STATS_DIR", str(tmp_path / "stats"))
-    monkeypatch.setattr(config, "HTML_SERVE_DIR", str(tmp_path / "html"))
+    monkeypatch.setattr(html_status_config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(html_status_config, "HTML_SERVE_DIR", str(tmp_path / "html"))
 
     assert shortlist_job.run(dry_run=True, skip_sync=True) == 0
     assert recording.writes == []
     # a dry run still publishes, flagged as one -- the page is how you inspect it
-    page = tmp_path / "html" / config.RECOMMENDER_PAGE / "index.html"
+    page = tmp_path / "html" / html_status_config.RECOMMENDER_PAGE / "index.html"
     assert page.exists()
     assert "dry run" in page.read_text()

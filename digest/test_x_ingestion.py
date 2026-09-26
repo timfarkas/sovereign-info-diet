@@ -709,13 +709,20 @@ def test_a_corpus_that_fits_is_not_trimmed_at_all():
 
 import config
 from html_status import stats_page, stats_store
+from html_status import config as html_status_config
 
 
 @pytest.fixture
 def paths(tmp_path, monkeypatch):
-    """Redirect both the history and the served pages into the tmp dir."""
-    monkeypatch.setattr(config, "STATS_DIR", str(tmp_path / "stats"))
-    monkeypatch.setattr(config, "HTML_SERVE_DIR", str(tmp_path / "html"))
+    """Redirect both the history and the served pages into the tmp dir.
+
+    STATS_DIR / HTML_SERVE_DIR live in html_status/config.py, not this
+    folder's own config.py -- html_status/ is shared and deliberately
+    independent of either job's configuration. Patching the wrong module here
+    silently writes test data into the real, shared production history.
+    """
+    monkeypatch.setattr(html_status_config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(html_status_config, "HTML_SERVE_DIR", str(tmp_path / "html"))
     return tmp_path
 
 
