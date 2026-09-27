@@ -377,6 +377,20 @@ class XScraper:
         print(f"  [x] health: {status} "
               f"({failed}/{attempted} batches failed, {tweets} new tweets)")
 
+    def record_credits(self, before, after):
+        """Fold the twitterapi.io balance into the health file the digest reads."""
+        if not self.health_path.exists():
+            return
+        health = json.loads(self.health_path.read_text())
+        health["credits_before"] = before
+        health["credits_after"] = after
+        health["credits_used"] = (None if before is None or after is None
+                                  else before - after)
+        self.health_path.write_text(json.dumps(health, indent=2))
+        used = health["credits_used"]
+        print(f"  [x] credits: {used if used is not None else 'unknown'} used, "
+              f"{after if after is not None else 'unknown'} remaining")
+
     def save_to_json(self, data: List[Dict], filename: str = None) -> str:
         filename = filename or f"x_data_{datetime.now():%Y%m%d_%H%M%S}.json"
         path = self.base_dir / filename
@@ -389,9 +403,12 @@ def main() -> int:
     from config import (X_SEED_ACCOUNTS, X_MAX_QUERY_CHARS, X_MAX_ACCOUNTS_PER_BATCH,
                         X_MAX_TWEETS_PER_RUN, X_MAX_PAGES_PER_BATCH, X_MAX_ACCOUNTS,
                         X_ACCOUNT_LIST_TTL_DAYS, TIME_HORIZON_DAYS)
+    from config import TWITTERAPI_CREDIT_SETTLE_SECONDS
     print("=== X ingestion (twitterapi.io) ===")
     scraper = XScraper()
     credits = scraper.client.credits()
+    # the balance read is itself an API call; only the scrape's own calls count
+    calls_before = scraper.client.calls
     print(f"  [x] credits remaining: {credits if credits is not None else 'unknown'}")
     try:
         tweets = scraper.scrape(
@@ -411,6 +428,18 @@ def main() -> int:
         scraper.health_path.write_text(json.dumps(health, indent=2))
         print(f"  [x] X INGESTION DOWN: {e}")
         return 1
+    # twitterapi.io debits the balance tens of seconds after the call returns --
+    # measured on 2026-09-25, a 3-page fetch still read as 0 credits used
+    # immediately and settled ~20s later. Reading it too early reports free API
+    # access, which is worse than reporting nothing.
+    # Gate on calls, not on tweets: a re-run that finds nothing NEW still paged
+    # the API and still spent credits, and a run that made no calls at all has
+    # nothing to wait for.
+    if scraper.client.calls > calls_before and credits is not None:
+        if TWITTERAPI_CREDIT_SETTLE_SECONDS:
+            time.sleep(TWITTERAPI_CREDIT_SETTLE_SECONDS)
+        scraper.record_credits(before=credits, after=scraper.client.credits())
+
     if not tweets:
         # Don't write an empty dump: it would shadow a good one from earlier the
         # same day and turn a re-run into a silently emptied digest. No new

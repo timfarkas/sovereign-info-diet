@@ -19,8 +19,30 @@ They are deliberately separate: different dependencies (onnxruntime and
 scikit-learn have no business near the digest), and an hour apart so they never
 hold memory simultaneously on a 3.7 GB box.
 
-**Neither job tells anyone when it breaks.** The digest's absence is the only
-alarm for one; a stale shortlist is the only alarm for the other.
+**Neither job tells anyone when it breaks** -- nothing pushes an alert. What
+exists now is a pull surface, in `html_status/` (shared, at the repo root):
+each run appends a JSON row to `data/run_stats/<job>.jsonl` unconditionally,
+and -- only if `HTML_SERVE_DIR` is set in `.env` -- re-renders a static page
+there. Set on this box to `/home/kyro/html_serve/`, reachable on the WireGuard
+mesh only:
+
+| | page |
+|---|---|
+| digest | <http://192.168.2.6:8080/ai-digest/> |
+| recommender | <http://192.168.2.6:8080/recommender/> |
+
+Both carry a status pill and a "flagged this run" box, so a dead leg is one
+glance rather than one `grep`. Two things the pages have already shown that
+this file only asserted: the category one-hots contribute roughly +2.9 log-odds
+to a backlog `article` against -0.6 to a feed `rss` item, which is most of the
+gap between the two pools and is visible per pick under "why this score"; and
+`class_weight="balanced"` puts the average document at ~52%, so a score is not
+a probability that he will read the thing. Rebuild either from history without
+running a job: `python -m html_status.stats_page` (prints one line and exits
+if `HTML_SERVE_DIR` is unset). The rendering call is wrapped in a try/except in
+both jobs on purpose -- a rendering bug must never be the reason a digest does
+not go out, or the reason a cycle that already wrote tags to Readwise reports
+failure. It prints the traceback rather than swallowing it.
 
 ## The box
 

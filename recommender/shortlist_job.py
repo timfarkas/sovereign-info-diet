@@ -13,6 +13,7 @@ import argparse
 import os
 import random
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -49,12 +50,13 @@ def sync(store, client, full=False):
 
 
 def embed_missing(store, limit=None):
+    """Embed whatever has no vector yet. Returns what it did, for the status page."""
     pending = store.missing_embeddings(config.EMBED_KEY)
     if limit:
         pending = pending[:limit]
     if not pending:
         log("embeddings up to date")
-        return 0
+        return {"pending": 0, "embedded": 0, "dropped_superseded": 0}
     log(f"embedding {len(pending)} documents")
     done = 0
     for start in range(0, len(pending), 200):
@@ -66,7 +68,7 @@ def embed_missing(store, limit=None):
     dropped = store.forget_other_embeddings(config.EMBED_KEY)
     if dropped:
         log(f"dropped {dropped} vectors from a superseded text recipe")
-    return done
+    return {"pending": len(pending), "embedded": done, "dropped_superseded": dropped}
 
 
 def _parse(stamp):
@@ -88,10 +90,18 @@ def _duplicates(candidate, already, embeddings):
     return False
 
 
-def pick(store, model, taste, now=None, rng=None):
-    """Choose this cycle's shortlist. Returns [(doc, slot, score), ...]."""
+def pick(store, model, taste, now=None, rng=None, trace=None):
+    """Choose this cycle's shortlist. Returns [(doc, slot, score), ...].
+
+    `trace`, if given, is filled in with the reasoning behind each pick --
+    {doc_id: {rank, pool_size, short_reserve}} plus a "_pools" entry holding the
+    candidate counts. It is an out-parameter rather than part of the return
+    value so that the selection contract every test in test_shortlist.py asserts
+    on stays exactly what it was.
+    """
     now = now or datetime.now(timezone.utc)
     rng = rng or random.Random()
+    trace = {} if trace is None else trace
     embeddings = store.embeddings(config.EMBED_KEY)
     shown = store.last_shown()
     cooldown = now - timedelta(days=config.RESHOW_COOLDOWN_DAYS)
@@ -130,8 +140,9 @@ def pick(store, model, taste, now=None, rng=None):
         scores = recommender_model.score_documents(pool, embeddings, model, taste)
         ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
         ranked_slots = total - random_slots
+        rank_of = {d["id"]: i + 1 for i, d in enumerate(ranked)}
 
-        def take(candidates, limit, picks):
+        def take(candidates, limit, picks, short_reserve=False):
             for candidate in candidates:
                 if len(picks) >= limit:
                     break
@@ -140,22 +151,33 @@ def pick(store, model, taste, now=None, rng=None):
                 if _duplicates(candidate, [d for d, _, _ in picks], embeddings):
                     continue
                 picks.append((candidate, label, scores.get(candidate["id"], 0.0)))
+                trace[candidate["id"]] = {
+                    "rank": rank_of.get(candidate["id"]),
+                    "pool_size": len(pool),
+                    "short_reserve": short_reserve,
+                }
             return picks
 
         short = [d for d in ranked if (d.get("word_count") or 0) < config.SHORT_WORDS]
-        picks = take(short, min(short_slots, ranked_slots), [])
+        picks = take(short, min(short_slots, ranked_slots), [], short_reserve=True)
         picks = take(ranked, ranked_slots, picks)
         taken = {d["id"] for d, _, _ in picks}
         rest = [d for d in pool if d["id"] not in taken]
-        picks += [
-            (d, f"{label}-random", None)
-            for d in rng.sample(rest, min(random_slots, len(rest)))
-        ]
+        drawn = rng.sample(rest, min(random_slots, len(rest)))
+        for d in drawn:
+            trace[d["id"]] = {"rank": None, "pool_size": len(pool), "short_reserve": False}
+        picks += [(d, f"{label}-random", None) for d in drawn]
         return picks
 
     # The backlog is sampled before it is ranked, so the model never gets to comb
     # all of `later` for its own favourites -- it only ranks within a random draw.
     backlog = rng.sample(later, min(config.RESURFACE_SAMPLE_SIZE, len(later)))
+    trace["_pools"] = {
+        "feed_candidates": len(feed),
+        "later_candidates": len(later),
+        "backlog_sampled": len(backlog),
+        "embedded": len(embeddings),
+    }
 
     return fill(
         feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS, config.FEED_SHORT_SLOTS
@@ -180,14 +202,27 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
     store = Store(config.RECOMMENDER_DB)
     client = ReadwiseClient()
     cycle = datetime.now(timezone.utc).date().isoformat()
+    started = time.monotonic()
 
+    # Read before sync() overwrites it: this is the boundary the overnight
+    # signal counts are measured against.
+    previous_sync = store.get_meta("last_sync")
+    clock = time.monotonic()
+    synced = 0
     if not skip_sync:
         client.check_auth()
-        sync(store, client, full=full_sync)
-    embed_missing(store, limit=embed_limit)
+        synced = sync(store, client, full=full_sync)
+    sync_info = {"documents": synced, "since": previous_sync, "full": full_sync,
+                 "skipped": skip_sync, "duration_s": time.monotonic() - clock}
 
+    clock = time.monotonic()
+    embed_info = embed_missing(store, limit=embed_limit)
+    embed_info["duration_s"] = time.monotonic() - clock
+
+    clock = time.monotonic()
     model, stats = recommender_model.train(store)
     log(f"labels: {stats}")
+    metrics = None
     if model is None:
         taste = recommender_model.taste_vector(store)
         if taste is None:
@@ -198,16 +233,59 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
         taste = None
         metrics = recommender_model.evaluate(store)
         log(f"holdout: {metrics}" if metrics else "holdout: not enough held-out signal yet")
+    train_duration = time.monotonic() - clock
 
     old = evictable(store)
-    chosen = pick(store, model, taste)
+    trace = {}
+    chosen = pick(store, model, taste, trace=trace)
     log(f"evicting {len(old)}, adding {len(chosen)}")
     for doc, slot, score in chosen:
         pretty = f"{score:.3f}" if score is not None else "  --  "
         log(f"  [{slot:9}] {pretty}  {(doc.get('title') or '')[:70]}")
 
+    def publish():
+        """Record this run and re-render the status page.
+
+        Wrapped: a bug in the stats layer must not be able to undo a cycle whose
+        tags are already written to Readwise. It prints the traceback instead of
+        swallowing it, so a broken page is loud in the log.
+        """
+        try:
+            import sys
+            from pathlib import Path
+            # html_status/ is a repo-root sibling of this folder, not a
+            # dependency installed anywhere on sys.path -- add the root once,
+            # here, rather than assuming whoever invoked this script already
+            # did. shortlist_stats itself lives right here in recommender/, so
+            # it needs no path help -- same-directory import, same as config.
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from html_status import stats_page, stats_store
+            import shortlist_stats
+            row = shortlist_stats.build(
+                store, cycle=cycle, dry_run=dry_run, chosen=chosen, trace=trace,
+                evicted_ids=old, label_stats=stats, holdout=metrics,
+                trained=model is not None, model=model, sync_info=sync_info,
+                embed_info=embed_info,
+                durations={"train_duration_s": train_duration,
+                           "duration_s": time.monotonic() - started},
+                problems=([] if metrics else
+                          ["not enough held-out signal to score the model tonight"]),
+            )
+            stats_store.record("shortlist", row)          # unconditional: cheap history
+            written = stats_page.render_recommender_page()  # opt-in: needs HTML_SERVE_DIR
+            if written:
+                log(f"stats: wrote {written}")
+            else:
+                log("stats: recorded to data/run_stats -- page rendering is off "
+                    "(set HTML_SERVE_DIR in .env to turn it on)")
+        except Exception:
+            import traceback
+            log("stats: status page failed -- the cycle itself is unaffected:")
+            traceback.print_exc()
+
     if dry_run:
         log("dry run -- no tags written")
+        publish()
         return 0
 
     updates = {}
@@ -228,6 +306,7 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
     for doc, slot, score in chosen:
         store.log_event(doc["id"], "added", cycle, slot=slot, score=score)
     log(f"wrote {len(updates)} tag updates")
+    publish()
     return 0
 
 
