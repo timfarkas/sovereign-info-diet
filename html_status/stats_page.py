@@ -568,7 +568,14 @@ def reddit_bodies(posts):
 
 
 def page(title, subtitle, status, body, other):
-    """Shell shared by both pages. `other` is (href, label) for the sibling page."""
+    """Shell shared by every page.
+
+    `other` is (href, label) or a list of them -- there used to be exactly two
+    pages that pointed at each other, and there are now one per digest topic
+    plus the recommender.
+    """
+    if other and isinstance(other[0], str):
+        other = [other]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
@@ -583,7 +590,8 @@ def page(title, subtitle, status, body, other):
 </div>
 {body}
 <footer>
-  rendered {esc(generated)} &middot; <a href="{esc(other[0])}">{esc(other[1])}</a>
+  rendered {esc(generated)} &middot; {" &middot; ".join(
+      f'<a href="{esc(href)}">{esc(label)}</a>' for href, label in other)}
   &middot; <a href="../">all pages</a><br>
   source: <code>html_status/stats_page.py</code>, history in
   <code>data/run_stats/*.jsonl</code>. Rebuild any time with
@@ -595,12 +603,40 @@ def page(title, subtitle, status, body, other):
 
 # -- digest page --------------------------------------------------------------
 
-def render_digest(rows):
+def digest_nav(topic_key):
+    """Links to every OTHER digest page, plus the recommender.
+
+    Built from what has history on disk, so a page added tonight is linked from
+    the others the next time they render.
+    """
+    links = []
+    for key in config.digest_topic_keys():
+        if key == topic_key:
+            continue
+        label = "AI digest" if key == "ai" else f"{key} digest"
+        links.append((f"../{config.digest_page(key)}/", label))
+    links.append(("../recommender/", "recommender status"))
+    return links
+
+
+def digest_title(rows, topic_key):
+    """Page title. Taken from the last row's own topic block where there is one.
+
+    Rows written before topics existed have no `topic` key at all, and they are
+    all AI-digest rows -- hence the fallback.
+    """
+    name = get(rows[-1] if rows else {}, "topic", "name")
+    if topic_key == "ai":
+        return "AI digest"
+    return f"{name} digest" if name else f"{topic_key} digest"
+
+def render_digest(rows, topic_key="ai"):
     if not rows:
-        return page("AI digest", "no run recorded yet", pill("unknown", TEXT_3),
+        return page(digest_title(rows, topic_key), "no run recorded yet",
+                    pill("unknown", TEXT_3),
                     '<p class="muted">The pipeline has not written a stats row yet. '
                     'It will after its next 01:00 UTC run.</p>',
-                    ("../recommender/", "recommender status"))
+                    digest_nav(topic_key))
     last = rows[-1]
     recent = rows[-30:]
     labels = [day(r.get("run_at") or r.get("recorded_at")) for r in recent]
@@ -628,8 +664,10 @@ def render_digest(rows):
     x_usd = spend.get("usd")
     total_usd = None if cost is None and x_usd is None else (cost or 0) + (x_usd or 0)
     head_tiles = tiles([
-        tile("posts analyzed", num((reddit_n or 0) + (x_n or 0)),
-             f"{num(x_n)} X &middot; {num(reddit_n)} reddit"),
+        tile("posts analyzed",
+             num((reddit_n or 0) + (x_n or 0) + (get(last, "feeds", "total") or 0)),
+             (f'{num(get(last, "feeds", "total"))} feed &middot; ' if last.get("feeds")
+              else "") + f"{num(x_n)} X &middot; {num(reddit_n)} reddit"),
         tile("cost per digest", DASH if total_usd is None else f"${total_usd:.4f}",
              (f'{"$%.4f" % cost if cost is not None else "?"} llm + '
               f'{"$%.4f" % x_usd if x_usd is not None else "?"} twitterapi')),
@@ -640,6 +678,59 @@ def render_digest(rows):
         tile("last run", esc(ago(last.get("run_at"))),
              esc((last.get("run_at") or "")[:16].replace("T", " "))),
     ])
+
+    # -- subscribed feeds and newsletters
+    # Absent entirely on rows written before the feed leg existed, and on the AI
+    # topic which deliberately takes no feed items. Absent is not zero, so the
+    # whole section disappears rather than rendering an empty one.
+    feed_block = last.get("feeds")
+    feeds = ""
+    if feed_block:
+        fh = feed_block.get("health") or {}
+        rw = fh.get("readwise") or {}
+        direct = fh.get("direct") or {}
+        dropped = fh.get("dropped") or {}
+        failed = direct.get("feeds_failed") or {}
+        by_feed = sorted((feed_block.get("by_feed") or {}).items(),
+                         key=lambda kv: -kv[1])[:40]
+        by_source = feed_block.get("by_source") or {}
+        feeds = (
+            '<h2>subscribed feeds</h2><div class="card">'
+            f'<p class="sub">{num(feed_block.get("total"))} articles reached the '
+            f'model, {num(feed_block.get("with_link"))} of them with a fetchable '
+            f'link. Two independent paths feed this: Readwise Reader for what he '
+            f'subscribes to, and a direct RSS fetch for the per-topic feeds in '
+            f'<code>digest/topics.py</code>. Neither is a fallback for the other.</p>'
+            + table(["path", "status", "items"], [
+                ["readwise reader", esc(str(rw.get("status", "?"))),
+                 num(rw.get("items"))],
+                ["direct rss", esc(str(direct.get("status", "?")))
+                 + (f' <span style="color:{WARN}">({len(failed)} of '
+                    f'{num(direct.get("feeds_configured"))} feeds failed)</span>'
+                    if failed else ""),
+                 num(direct.get("items"))],
+                ["<strong>reaching this topic</strong>", "",
+                 f'<strong>{num(feed_block.get("total"))}</strong>'],
+            ], ["l", "l", "n"])
+            + (f'<p class="why">Dropped at ingest: '
+               f'{num(dropped.get("self_digests"))} of our own digests forwarded '
+               f'back into the feed, {num(dropped.get("out_of_window"))} outside '
+               f'the window, {num(dropped.get("duplicates"))} duplicates across '
+               f'the two paths.</p>' if dropped else "")
+            + (f'<p class="why">Reached here as: '
+               + ", ".join(f"{num(v)} via {esc(k)}" for k, v in by_source.items())
+               + ".</p>" if by_source else "")
+            + ('<p class="sub" style="margin-top:.8rem">publications contributing '
+               f'to this run -- top {len(by_feed)} of '
+               f'{len(feed_block.get("by_feed") or {})}.</p>'
+               + bar_chart(by_feed, " articles", log=True) if by_feed else "")
+            + ('<div class="warnbox" style="margin-top:.8rem"><strong>feeds that '
+               'failed to fetch</strong><ul>'
+               + "".join(f"<li>{esc(u)} &mdash; {esc(e)}</li>"
+                         for u, e in failed.items())
+               + '</ul></div>' if failed else "")
+            + '</div>'
+        )
 
     # -- per source, this run
     by_sub = get(last, "reddit", "by_subreddit", default={}) or {}
@@ -778,7 +869,10 @@ def render_digest(rows):
         '<div class="card"><h3>posts reaching the model</h3>'
         '<p class="sub">Per nightly run. A flat zero on one series is a dead leg, '
         'not a quiet news day.</p>'
-        + line_chart(labels, [
+        + line_chart(labels,
+            ([("feed articles", [get(r, "feeds", "total") for r in recent])]
+             if any(r.get("feeds") for r in recent) else [])
+            + [
             ("X posts", [get(r, "x", "total") for r in recent]),
             ("reddit posts", [get(r, "reddit", "total") for r in recent]),
             ("pages read", [get(r, "links", "read") for r in recent]),
@@ -802,12 +896,17 @@ def render_digest(rows):
         ["l", "n", "n", "n", "n", "n", "n", "l"],
     ) + '</div>'
 
+    every = get(last, "topic", "every_n_days", default=1) or 1
+    cadence = ("01:00 UTC nightly" if every <= 1
+               else f"every {every} days, 01:00 UTC")
+    priorities = get(last, "topic", "priorities")
     subtitle = (f'{len(rows)} run{"" if len(rows) == 1 else "s"} recorded &middot; '
-                f'last {esc(ago(last.get("run_at")))} &middot; 01:00 UTC nightly')
-    return page("AI digest", subtitle, status,
-                warn_html + head_tiles + sources + money + summarization + links
-                + trends + history,
-                ("../recommender/", "recommender status"))
+                f'last {esc(ago(last.get("run_at")))} &middot; {cadence}'
+                + (f' &middot; {esc(priorities)}' if priorities else ""))
+    return page(digest_title(rows, topic_key), subtitle, status,
+                warn_html + head_tiles + feeds + sources + money + summarization
+                + links + trends + history,
+                digest_nav(topic_key))
 
 
 # -- recommender page ---------------------------------------------------------
@@ -1110,11 +1209,27 @@ def write_page(name, markup):
     return path
 
 
-def render_digest_page():
-    """Write the digest page, or None if the status pages are disabled."""
+def render_digest_page(topic_key="ai"):
+    """Write one topic's digest page, or None if the status pages are disabled.
+
+    Every digest page is re-rendered, not just this topic's: the pages link to
+    each other and carry each other's names in the nav, so a topic that runs
+    tonight has to appear in the nav of the pages that ran last night. Rendering
+    is cheap (read a jsonl, write a file) and this runs a handful of times a
+    night at most.
+    """
     if not enabled():
         return None
-    return write_page(config.DIGEST_PAGE, render_digest(stats_store.load("digest")))
+    keys = config.digest_topic_keys()
+    if topic_key not in keys:
+        keys.append(topic_key)      # first run of a brand-new topic
+    written = None
+    for key in keys:
+        rows = stats_store.load(config.digest_stats_kind(key))
+        path = write_page(config.digest_page(key), render_digest(rows, key))
+        if key == topic_key:
+            written = path
+    return written
 
 
 def render_recommender_page():
@@ -1128,7 +1243,10 @@ def render_recommender_page():
 def render_all():
     if not enabled():
         return []
-    return [render_digest_page(), render_recommender_page()]
+    out = [write_page(config.digest_page(k),
+                      render_digest(stats_store.load(config.digest_stats_kind(k)), k))
+           for k in config.digest_topic_keys()]
+    return out + [render_recommender_page()]
 
 
 if __name__ == "__main__":
