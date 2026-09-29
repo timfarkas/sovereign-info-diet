@@ -1,5 +1,42 @@
-# digital info filter
+# Sovereign Information Diet 
 
+You don't want Elon to decide what to feed or not feed you? 
+You don't want Zuck to use you as an attention extraction mine?
+
+Then LIBERATE YOURSELF from their dystopian yoke and build your own data ingestion pipeline and recommender algorithm.
+
+This project consists of two things that allow this:
+- A content digest system that scrapes Reddit and X posts (easily extensible to other platforms) and summarizes them, sending them to you as e-mails.
+- A Readwise recommender system that shows you posts similar to ones you read or saved for later or rated well.
+
+
+## Full Flow
+
+1. `X and Reddit posts -> digest system -> content digest e-mail`
+
+2. `Digest e-mails & other newsletters -> auto-forwarded to Readwise feed e-mail (via mail server) -> Readwise Feed`
+
+3. `Readwise Feed -> recommender system picks ten items from feed and 'saved for later' -> Daily Recommendations in Readwise`
+
+The recommender system is re-trained every night on your ratings and reading behavior. Specifically, it is trained on 1. your ratings, 2. your reading and `save for later` behavior.
+
+
+## Pre-requisites
+The entire pipeline requires a VPS or private server to run on every night. Furthermore, you'll need:
+
+
+**Digest system:**
+- Mail server
+- Twitter API (inofficial) & Reddit API keys
+- OpenAI API keys for summaries
+
+
+**Recommender system:**
+- E-mail server/client capable of forwarding newsletters and digests (e.g. ProtonMail)
+- Readwise & Readwise API Key
+
+
+## Technical Details (LLM-generated)
 Two independent nightly jobs sharing one repo and one `.env`:
 
 - **`digest/`** — X/Twitter + Reddit → linked-page enrichment → llm gate → daily
@@ -19,7 +56,7 @@ paths for cron, since cron does not run with your shell's `$HOME`),
 `EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
 `HTML_SERVE_DIR` is optional, for both -- see "status page" below.
 
-## digest/
+### digest/
 
 ```bash
 cd digest
@@ -28,7 +65,7 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-### the pipeline
+#### the pipeline
 
 `digest/run_pipeline.sh` (cron, 01:00 UTC) runs four legs:
 
@@ -43,7 +80,7 @@ Either source leg may fail without killing the run; the summarizer refuses to ma
 an empty digest and stamps a maintenance banner on the mail when a leg is
 unhealthy, so breakage shows up in the inbox rather than in silence.
 
-### knobs
+#### knobs
 
 All in `digest/config.py`. The ones that move cost or shape:
 
@@ -56,7 +93,7 @@ All in `digest/config.py`. The ones that move cost or shape:
 - `X_MAX_QUERY_CHARS` — leave it under ~450. X search silently returns zero
   results for over-long queries instead of erroring.
 
-### conventions worth knowing
+#### conventions worth knowing
 
 - **No social-platform links in the output.** x.com / reddit.com / t.co links are
   stripped from the model's HTML (`strip_blocked_links`) and never fetched
@@ -64,7 +101,7 @@ All in `digest/config.py`. The ones that move cost or shape:
 - **Fetched pages are untrusted text.** They enter the prompt fenced and labelled
   as data, not instruction.
 
-## recommender/
+### recommender/
 
 Ranks the Readwise Reader firehose and tags the best few `shortlist`, which is
 the tag behind Reader's own "⭐ Shortlist" view. It has its own venv and its own
@@ -77,7 +114,7 @@ uv pip install --python .venv-rec/bin/python -r requirements.txt
 ./run_shortlist.sh --dry-run     # decides everything, writes nothing
 ```
 
-### the cycle
+#### the cycle
 
 `sync -> embed -> train -> select -> write`, nightly at 02:00 UTC.
 
@@ -89,7 +126,7 @@ uv pip install --python .venv-rec/bin/python -r requirements.txt
 | select | ranks fresh feed items, plus resurfaced slots from the `later` backlog |
 | write | one `bulk_update` adding/removing the `shortlist` tag |
 
-### where the labels come from
+#### where the labels come from
 
 Nobody has to sit down and rate a training set. The archive already is one, but
 absence of a positive is deliberately *not* the same as a negative -- most
@@ -111,7 +148,7 @@ Rating tags are the strongest signal and the one worth leaning on going
 forward; the rest exist so the model has something to learn from before enough
 ratings accumulate.
 
-### two things that are easy to get wrong
+#### two things that are easy to get wrong
 
 - **Age must never be a feature.** Old documents are archived, archived means read,
   so age predicts the label almost perfectly and yields a model that ranks by "is
@@ -133,7 +170,7 @@ metric; the offline one is a smoke test.
 The job only ever removes the `shortlist` tag from documents it added itself
 (every add and eviction is logged), so anything shortlisted by hand is left alone.
 
-## status page
+### status page
 
 Every run of either job appends one JSON row to `data/run_stats/`. That part is
 unconditional -- cheap, and useful history on its own. Turning it into a page is
@@ -185,7 +222,7 @@ never as zero -- "we never measured this" and "it was 0" are different claims.
 And no JavaScript and no CDN: hover detail rides on SVG `<title>`, and every
 chart is backed by a `<details>` table.
 
-## tests
+### tests
 
 ```bash
 cd digest && .venv/bin/python -m pytest test_x_ingestion.py --timeout 5
