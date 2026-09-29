@@ -128,11 +128,11 @@ uv pip install --python .venv-rec/bin/python -r requirements.txt
 
 #### where the labels come from
 
-Nobody has to sit down and rate a training set. The archive already is one, but
-absence of a positive is deliberately *not* the same as a negative -- most
-negative reasons only fire when there is contextual evidence he was actually
-looking at things that day, so a quiet week doesn't get read as him disliking
-everything in it:
+Nobody has to sit down and rate a training set -- the archive already is one.
+Absence of a positive counts as a weak negative, which is crude but is where
+the bulk of the signal lives: the thousands of stale, never-opened feed items
+are what give the ranker anything to push *against*. See the note below on the
+2026-09-25 attempt to make this more principled, and why it was reverted.
 
 | reason | signal | weight |
 |---|---|---|
@@ -140,13 +140,23 @@ everything in it:
 | `favorited` | `favorite` / `important` tag | 2.0 |
 | `read` | archived with real reading progress | 1.5 |
 | `opened` | opened but not finished | 1.0 |
-| `passed` | shortlisted, shown, evicted unopened -- only on a day he read more than half of that day's shortlist | 0.2 |
-| `archived_unread` | archived without ever opening it -- an explicit "no" | 0.3 |
-| `ignored` | stale, never-opened feed item -- only on a day he also archived something else unread | 0.1 |
+| `passed` | shortlisted, shown, evicted unopened | 1.0 |
+| `ignored` | stale, never-opened feed item | 0.3 |
 
 Rating tags are the strongest signal and the one worth leaning on going
 forward; the rest exist so the model has something to learn from before enough
 ratings accumulate.
+
+**Reverted 2026-09-29 -- do not re-apply without an online A/B.** Between
+2026-09-25 and 2026-09-29 the two weak negatives only fired with same-day
+corroborating evidence (`passed` needed him to have read most of that day's
+shortlist, `ignored` needed something else archived unread the same day), a new
+`archived_unread` reason was added, and the weights dropped to 0.2 / 0.1. The
+reasoning was sound -- not opening something on a busy day is not a taste
+signal. The effect was not: labels fell 6045 -> 1304, the training set went
+from 14% positive to 65% positive, and held-out AUC fell from 0.72 to 0.53
+against a random baseline of 0.47. The ranker was at chance. Whatever is wrong
+with counting neglect as rejection, it is less wrong than having no negatives.
 
 #### two things that are easy to get wrong
 

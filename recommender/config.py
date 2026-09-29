@@ -92,24 +92,11 @@ READ_WORDS = 500
 READ_PROGRESS = 0.8
 OPENED_WORDS = 100     # below this an open says nothing either way
 LABEL_WEIGHTS = {
-    "rated": 3.0,           # he tagged it rate:good / rate:bad
-    "favorited": 2.0,       # favorite / important
-    "read": 1.5,            # archived with real reading progress
-    "opened": 1.0,          # opened but not finished
-    # Shortlisted, shown, evicted unopened -- but only on a day he mostly kept
-    # up with the shortlist (see CYCLE_READ_MAJORITY below). On a quiet day,
-    # skipping something says nothing; on a day he read most of the list, it
-    # does. Deliberately small: rate:bad is the signal to lean on going
-    # forward, this is just not throwing away a slight one.
-    "passed": 0.2,
-    # Archived without ever being opened -- an explicit "no", not neglect.
-    "archived_unread": 0.3,
-    # A stale, never-opened feed item -- but only counted as a negative on a
-    # day he was actively shelving other feed items too (see SHELVED below).
-    # Otherwise the firehose simply outran him, which is not a taste signal.
-    "ignored": 0.1,
+    "rated": 3.0,          # he tagged it rate:good / rate:bad
+    "favorited": 2.0,      # favorite / important
+    "read": 1.5,           # archived with real reading progress
+    "opened": 1.0,         # opened but not finished
+    "passed": 1.0,         # shortlisted, shown, evicted unopened
+    "ignored": 0.3,        # stale feed item, never opened
 }
-# A cycle's shortlist counts as "he mostly kept up" once more than this
-# fraction of it was actually read.
-CYCLE_READ_MAJORITY = 0.5
 MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold start
