@@ -140,3 +140,39 @@ TWITTERAPI_CREDIT_SETTLE_SECONDS = 45
 # dollar, which is where this number comes from, but nobody has checked it
 # against an invoice. Set it to None to make the page show credits only.
 TWITTERAPI_CREDITS_PER_USD = 100_000
+
+
+# --- subscribed feeds and newsletters (the RSS leg) ---------------------------
+# Two paths, both live; see rss_scraper.py for why neither is a fallback for the
+# other. Turning both off leaves the topic digests with X and reddit only, which
+# is a much worse digest but not a broken one.
+RSS_READWISE_ENABLED = True
+RSS_DIRECT_ENABLED = True
+# `rss` is what the brief literally asked for. `email` is here because that is
+# where his actual analysis lives -- measured 2026-09-29 against the live Reader
+# API, Money Stuff / ChinaTalk / Noahpinion / SemiAnalysis / Sentinel are all
+# category=email newsletters forwarded into the feed, and an rss-only filter
+# handed the geopolitics topic wire headlines with none of the interpretation.
+RSS_CATEGORIES = ("rss", "email")
+# Wide enough to cover the longest topic window (3 days) plus a missed cron.
+RSS_WINDOW_DAYS = 4
+RSS_MAX_ITEMS_PER_FEED = 40         # per direct feed, per run
+RSS_SUMMARY_MAX_CHARS = 1200        # feed abstracts; the body comes from link_fetcher
+RSS_USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
+# His own digests are auto-forwarded into the Reader feed, so without this the
+# pipeline summarises its own output and the summary-of-a-summary compounds
+# nightly. Matched on author and on title prefix because the forwarded copy
+# keeps both.
+RSS_EXCLUDE_AUTHORS = ("Meta Minsky",)
+RSS_EXCLUDE_TITLE_PREFIXES = ("AI Digest", "Geopolitics, Markets",
+                              "Pandemic Preparedness", "Europe, the EU")
+
+
+# --- reddit quota -------------------------------------------------------------
+# Was POSTS_TO_ANALYZE // len(SUBREDDITS) == 12, computed over the AI topic's
+# five subreddits. The union across all four topics is 19 subreddits, so keeping
+# that formula would have silently cut the AI digest from 12 posts per subreddit
+# to 3. It is a fixed per-subreddit quota now, and POSTS_TO_ANALYZE stays as the
+# AI topic's own budget so nothing else that reads it changes meaning.
+POSTS_PER_SUBREDDIT = POSTS_TO_ANALYZE // len(SUBREDDITS)
