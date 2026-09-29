@@ -1,7 +1,7 @@
 # State of this box
 
 What is running, what it is doing, and what is known to be wrong with it.
-Last updated 2026-09-25.
+Last updated 2026-09-29.
 
 ## Two independent jobs
 
@@ -97,16 +97,32 @@ back to 2019. Author is populated on 99%.
 Read rates vary enormously by publication — Astral Codex Ten 21 reads of 146
 items, reuters.com 8 of 1,183 — which is why author and site name are embedded.
 
-Labels derived: ~6,000, of which ~800 positive, as of 2026-09-24 -- **stale
-now.** The labelling rules changed 2026-09-25: `ignored` (stale, never-opened
-feed item) and `passed` (shortlisted, evicted unopened) now only fire when
-there is same-day corroborating evidence (something else was archived unread
-that day / most of that day's shortlist was actually read), instead of firing
-unconditionally. A dry run against the live corpus post-change measured 1,237
-labelled (832 positive) -- most of the old unconditional "stale feed, never
-opened" bulk no longer qualifies, and a new `archived_unread` reason picks up
-part of the slack. Net effect: far fewer labels, but each one should be a
-cleaner signal. Worth a fresh measurement pass once this has run for a while.
+Labels derived: 6,199, of which 848 positive (measured 2026-09-29). The bulk --
+5,337 -- is `ignored`: stale feed items he never opened. That is crude, and it
+is also the only thing giving the ranker something to push against.
+
+**The 2026-09-25 labelling change was reverted on 2026-09-29 (ticket KYRO-22).**
+It had gated both weak negatives on same-day corroborating evidence, added an
+`archived_unread` reason, and dropped the negative weights to 0.2 / 0.1. The
+argument was good and the outcome was bad -- Tim reported the recommendations
+got worse, and the logs agree:
+
+| run | labels | positives | positive rate | AUC | AUC of a random ranker on the same split |
+|---|---|---|---|---|---|
+| 09-24, before | 6,026 | 812 | 4.9% | 0.690 | 0.505 |
+| 09-25, before | 6,045 | 821 | 5.9% | 0.721 | 0.457 |
+| 09-28, after | 1,293 | 836 | 53.9% | 0.525 | **0.539** |
+| 09-29, after | 1,304 | 845 | 56.8% | 0.534 | 0.467 |
+| 09-29, reverted | 6,199 | 848 | 8.9% | 0.742 | 0.521 |
+
+Gating removed ~5,100 negatives and left a training set that was 54-57%
+positive, at which point the model ranked no better than shuffling. Compare
+only *within* a row: each labelling scheme defines its own holdout, so the AUC
+column is not comparable down the table, but model-vs-random on one split is.
+
+If this gets attempted again, the way to do it is online: keep the labels and
+A/B the two rankers against the random arms over a couple of weeks. Do not
+trust an offline AUC to adjudicate it -- see "known wrong" #1 below.
 
 ## Invariants — things that will silently break if changed
 
