@@ -149,10 +149,24 @@ def dedupe(items: Iterable[Dict]) -> List[Dict]:
     Readwise copy -- better parsed, with a word count -- is the one kept.
     Items with no URL fall back to their title so a newsletter without a web
     version still deduplicates.
+
+    CLEANED, because that is the whole point: the direct path sees a publisher's
+    bare permalink and the Readwise copy of the same article arrives decorated
+    with utm_source, so keying on the raw URL lets the pair straight through.
+
+    The title is part of the key as well, and that is a deliberate asymmetry.
+    Stripping the query string collapses any site that identifies articles with
+    one (`/news.php?id=5104`), and a wrongly-dropped article is invisible --
+    nothing in the output says it existed. A wrongly-KEPT duplicate costs a few
+    hundred tokens and is plainly visible in the digest. So errors fall that
+    way: same URL and same title is a duplicate, same URL and a different title
+    is two articles.
     """
     out, seen = [], set()
     for it in items:
-        key = it.get("url") or f"title:{(it.get('title') or '').lower()}"
+        title = (it.get("title") or "").strip().lower()
+        url = clean_url(it.get("url"))
+        key = f"{url}|{title}" if url else f"title:{title}"
         if key in seen:
             continue
         seen.add(key)

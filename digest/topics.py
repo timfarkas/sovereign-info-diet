@@ -381,6 +381,10 @@ PANDEMIC = Topic(
 
 
 EUROPE_KEYWORDS = (
+    # "eu" bare, word-bounded, was missing until a test asked whether "EU fines
+    # Meta" routes -- it did not, and that is how most EU stories are actually
+    # written. \beu\b cannot reach inside "euler" or "Europe".
+    "eu", "dsa", "dma",
     "european union", "european commission", "european parliament",
     "european council", "brussels", "eurozone", "euro area", "schengen",
     "cjeu", "court of justice", "echr", "european court", "meps", "mep ",
