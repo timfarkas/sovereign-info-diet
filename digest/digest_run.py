@@ -308,7 +308,8 @@ def main(argv: List[str] = None) -> int:
         for t in topics.all_topics():
             is_due, why = topics.due(t, state, now)
             print(f"{t.key:12s} {'DUE ' if is_due else 'wait'}  every {t.every_n_days}d"
-                  f"  {len(t.subreddits)} subs  {len(t.feeds)} feeds  -- {why}")
+                  f"  {len(t.subreddits)} subs  {len(t.feed_urls)} feeds  "
+                  f"{len(t.feeds)} pubs  -- {why}")
         return 0
 
     # Read the corpora at the widest lookback any selected topic wants, then let
