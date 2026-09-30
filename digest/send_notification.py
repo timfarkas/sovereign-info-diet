@@ -10,18 +10,21 @@ load_dotenv()
 
 def recipients_for(full: bool) -> List[str]:
     """Who a run mails. Full runs (the nightly cron path) mail EMAIL_TO plus
-    every address in config.EMAIL_RECIPIENTS_EXTRA. Anything else -- a --test
-    run, or the manual "resend tonight's digest" path -- mails EMAIL_TO alone,
-    so trying things out never spams the full list. A --dry-run never calls
-    this at all: digest_run.py skips mailing before recipients matter.
+    every address in EMAIL_TO_EXTRA (.env, comma-separated) -- both env vars,
+    not code, since this is a public repo and an address in config.py would
+    be committed for anyone to read. Anything else -- a --test run, or the
+    manual "resend tonight's digest" path -- mails EMAIL_TO alone, so trying
+    things out never spams the full list. A --dry-run never calls this at
+    all: digest_run.py skips mailing before recipients matter.
     """
     primary = os.getenv("EMAIL_TO")
     if not primary:
         raise ValueError("Missing email config. Set EMAIL_TO in .env")
     if not full:
         return [primary]
-    from config import EMAIL_RECIPIENTS_EXTRA
-    return [primary, *EMAIL_RECIPIENTS_EXTRA]
+    extra = [a.strip() for a in os.getenv("EMAIL_TO_EXTRA", "").split(",")
+             if a.strip()]
+    return [primary, *extra]
 
 def send_email(subject: str, body: str, to_email: Union[str, List[str], None] = None):
     """Send email via mail command (for Linux VPS with sendmail/postfix)"""

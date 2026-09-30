@@ -3,31 +3,47 @@
 
 Behaviour and contracts, not implementation: nothing here reaches into the
 `mail` subprocess call except to check the recipient list it was handed.
+
+Recipients come from .env (EMAIL_TO, EMAIL_TO_EXTRA), never from committed
+code -- this is a public repo, and a real address in config.py is committed
+for anyone to read the moment it lands.
 """
 
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
-import config
 import digest_run
 import send_notification
 
 
 @pytest.fixture(autouse=True)
-def email_to(monkeypatch):
+def email_env(monkeypatch):
     monkeypatch.setenv("EMAIL_TO", "tim@example.com")
+    monkeypatch.delenv("EMAIL_TO_EXTRA", raising=False)
+
+
+class TestNoAddressInCode:
+    """Regression guard for the thing this file is actually about."""
+
+    def test_config_has_no_email_address(self):
+        text = Path(__file__).with_name("config.py").read_text()
+        assert not re.search(r"[\w.+-]+@[\w-]+\.[a-z]{2,}", text)
 
 
 class TestRecipientsFor:
-    def test_full_run_is_primary_plus_extras(self):
+    def test_full_run_is_primary_plus_env_extras(self, monkeypatch):
+        monkeypatch.setenv("EMAIL_TO_EXTRA", "a@example.com, b@example.com")
         assert send_notification.recipients_for(full=True) == [
-            "tim@example.com", *config.EMAIL_RECIPIENTS_EXTRA]
+            "tim@example.com", "a@example.com", "b@example.com"]
 
-    def test_extras_include_the_new_recipient(self):
-        assert "drew.spartz@gmail.com" in config.EMAIL_RECIPIENTS_EXTRA
+    def test_full_run_with_no_extras_set_is_primary_only(self):
+        assert send_notification.recipients_for(full=True) == ["tim@example.com"]
 
-    def test_test_run_is_primary_only(self):
+    def test_test_run_ignores_extras(self, monkeypatch):
+        monkeypatch.setenv("EMAIL_TO_EXTRA", "a@example.com")
         assert send_notification.recipients_for(full=False) == ["tim@example.com"]
 
     def test_missing_email_to_raises_either_way(self, monkeypatch):

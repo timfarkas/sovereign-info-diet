@@ -55,9 +55,10 @@ paths for cron, since cron does not run with your shell's `$HOME`),
 `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
 `EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
 `HTML_SERVE_DIR` is optional, for both -- see "status page" below.
-A full digest run mails `EMAIL_TO` plus everyone in `EMAIL_RECIPIENTS_EXTRA`
-(`digest/config.py`) -- see "the pipeline" below for how `--test` and
-`--dry-run` narrow that.
+A full digest run mails `EMAIL_TO` plus everyone in `EMAIL_TO_EXTRA`, a
+comma-separated list (also `.env` -- not `config.py`, so no address is
+committed to this public repo) -- see "the pipeline" below for how `--test`
+and `--dry-run` narrow that.
 
 ### digest/
 
@@ -121,7 +122,7 @@ python llm_summarizer.py                     # still means "produce the AI diges
 
 Three mail tiers, checked in this order: `--dry-run`/`--no-mail` sends nothing;
 `--test` sends to `EMAIL_TO` only; otherwise (the nightly cron path) it sends
-to `EMAIL_TO` plus every address in `EMAIL_RECIPIENTS_EXTRA`.
+to `EMAIL_TO` plus every address in `EMAIL_TO_EXTRA` (.env).
 
 #### subscribed feeds
 
