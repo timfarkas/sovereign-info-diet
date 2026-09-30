@@ -104,6 +104,9 @@ svg {{ display: block; width: 100%; height: auto; overflow: visible; }}
 .post {{ border-left: 2px solid {LINE}; padding: .35rem 0 .35rem .7rem;
         margin: .5rem 0; font-size: .82rem; }}
 .post .why {{ font-size: .75rem; }}
+.promptblock {{ white-space: pre-wrap; word-break: break-word; font-size: .78rem;
+               color: {TEXT_2}; max-height: 440px; overflow-y: auto; margin: .5rem 0 0;
+               border-top: 1px solid {LINE}; padding-top: .6rem; }}
 """
 
 
@@ -679,6 +682,39 @@ def render_digest(rows, topic_key="ai"):
              esc((last.get("run_at") or "")[:16].replace("T", " "))),
     ])
 
+    # -- prompt and cross-run memory, exactly as they stood after the last run
+    # Read off the recorded row, not by importing digest/prompts.py or
+    # digest/state_notes.py -- html_status/ is deliberately independent of
+    # digest/'s own modules, environment and dependencies (see this package's
+    # config.py), so the job records its current prompt/state into the row
+    # itself rather than this renderer reaching across the package boundary.
+    # Absent (None) means an older row that predates this field; the empty-state
+    # placeholder strings state_notes.py itself returns are a real answer, not
+    # missing data, so they still render.
+    prompt_text = get(last, "topic", "prompt")
+    notes_text = get(last, "topic", "state_notes")
+    longrunning_text = get(last, "topic", "longrunning")
+    memory = ""
+    if prompt_text is not None or notes_text is not None or longrunning_text is not None:
+        memory = (
+            '<h2>prompt &amp; memory</h2><div class="card">'
+            '<p class="sub">Read-only. The prompt is tested, git-reviewed source in '
+            '<code>digest/prompts.py</code> -- change it there, through a PR, same as '
+            'any other code. The notes and board below are freeform runtime state the '
+            'pipeline writes to itself every run; editing those carries no such review '
+            'requirement.</p>'
+        )
+        if prompt_text is not None:
+            memory += details("current prompt for this topic",
+                              f'<pre class="promptblock">{esc(prompt_text)}</pre>')
+        if notes_text is not None:
+            memory += details("rolling notes (last 5 runs, oldest first)",
+                              f'<pre class="promptblock">{esc(notes_text)}</pre>')
+        if longrunning_text is not None:
+            memory += details("long-running observations board",
+                              f'<pre class="promptblock">{esc(longrunning_text)}</pre>')
+        memory += '</div>'
+
     # -- subscribed feeds and newsletters
     # Absent entirely on rows written before the feed leg existed, and on the AI
     # topic which deliberately takes no feed items. Absent is not zero, so the
@@ -904,8 +940,8 @@ def render_digest(rows, topic_key="ai"):
                 f'last {esc(ago(last.get("run_at")))} &middot; {cadence}'
                 + (f' &middot; {esc(priorities)}' if priorities else ""))
     return page(digest_title(rows, topic_key), subtitle, status,
-                warn_html + head_tiles + feeds + sources + money + summarization
-                + links + trends + history,
+                warn_html + head_tiles + memory + feeds + sources + money
+                + summarization + links + trends + history,
                 digest_nav(topic_key))
 
 
