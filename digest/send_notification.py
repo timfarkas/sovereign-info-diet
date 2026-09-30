@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import List, Union
 from dotenv import load_dotenv
 
+from config import csv_env
+
 load_dotenv()
 
 def recipients_for(full: bool) -> List[str]:
@@ -22,9 +24,7 @@ def recipients_for(full: bool) -> List[str]:
         raise ValueError("Missing email config. Set EMAIL_TO in .env")
     if not full:
         return [primary]
-    extra = [a.strip() for a in os.getenv("EMAIL_TO_EXTRA", "").split(",")
-             if a.strip()]
-    return [primary, *extra]
+    return [primary, *csv_env("EMAIL_TO_EXTRA")]
 
 def send_email(subject: str, body: str, to_email: Union[str, List[str], None] = None):
     """Send email via mail command (for Linux VPS with sendmail/postfix)"""

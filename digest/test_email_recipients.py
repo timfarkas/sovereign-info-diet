@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import config
 import digest_run
 import send_notification
 
@@ -31,6 +32,30 @@ class TestNoAddressInCode:
     def test_config_has_no_email_address(self):
         text = Path(__file__).with_name("config.py").read_text()
         assert not re.search(r"[\w.+-]+@[\w-]+\.[a-z]{2,}", text)
+
+    def test_config_has_no_hardcoded_x_handles(self):
+        # The handles this repo used to ship literally, before X_SEED_ACCOUNTS
+        # moved to .env -- guards against them creeping back in as a literal.
+        text = Path(__file__).with_name("config.py").read_text()
+        for handle in ("FarkasTim", "IsaakFreeman", "johannes_hage"):
+            assert handle not in text
+
+    def test_reddit_files_have_no_username_in_default_user_agent(self):
+        for name in ("reddit_scraper.py", "test_reddit.py"):
+            text = Path(__file__).with_name(name).read_text()
+            assert "timfarkas" not in text
+
+
+class TestCsvEnv:
+    """config.csv_env backs both EMAIL_TO_EXTRA and X_SEED_ACCOUNTS."""
+
+    def test_parses_and_strips_comma_separated_values(self, monkeypatch):
+        monkeypatch.setenv("SOME_LIST", "alice, bob ,carol")
+        assert config.csv_env("SOME_LIST") == ["alice", "bob", "carol"]
+
+    def test_empty_when_unset(self, monkeypatch):
+        monkeypatch.delenv("SOME_LIST", raising=False)
+        assert config.csv_env("SOME_LIST") == []
 
 
 class TestRecipientsFor:

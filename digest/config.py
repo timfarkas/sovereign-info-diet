@@ -2,6 +2,19 @@
 
 # Configuration for the digital info filter
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def csv_env(name: str) -> list:
+    """A comma-separated .env list, e.g. X_SEED_ACCOUNTS or EMAIL_TO_EXTRA --
+    both are real identities (handles, addresses), so they live in .env, never
+    as a literal here, since this is a public repo. Reads os.getenv at call
+    time (not import time) so tests can monkeypatch it without a module reload.
+    """
+    return [a.strip() for a in os.getenv(name, "").split(",") if a.strip()]
+
 TIME_HORIZON_DAYS = 2   # look back this many days
 POSTS_TO_ANALYZE = 60   # reddit posts to scrape for analysis
 
@@ -105,8 +118,11 @@ REDDIT_COMMENT_CHARS = 500         # was 150
 
 
 # --- X/Twitter ingestion (via twitterapi.io) ---------------------------------
-# The account universe is the union of whoever these accounts follow.
-X_SEED_ACCOUNTS = ["FarkasTim", "IsaakFreeman", "johannes_hage"]
+# The account universe is the union of whoever these accounts follow. Real
+# handles -- including third parties, not just the reader -- so this is a
+# .env var (X_SEED_ACCOUNTS, comma-separated), not a literal in this public
+# repo. Same reasoning as EMAIL_TO_EXTRA in send_notification.py.
+X_SEED_ACCOUNTS = csv_env("X_SEED_ACCOUNTS")
 X_ACCOUNT_LIST_TTL_DAYS = 7      # following lists move slowly; don't re-pay daily
 # X search silently returns nothing for queries past ~500 chars (measured
 # 2026-09-22: 466 chars fine, 514 chars -> 0 results for accounts that posted).

@@ -53,12 +53,18 @@ time on a 3.7 GB box.
 `HOME_DIR` (absolute path to your home directory -- used to build absolute
 paths for cron, since cron does not run with your shell's `$HOME`),
 `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
-`EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
-`HTML_SERVE_DIR` is optional, for both -- see "status page" below.
-A full digest run mails `EMAIL_TO` plus everyone in `EMAIL_TO_EXTRA`, a
-comma-separated list (also `.env` -- not `config.py`, so no address is
-committed to this public repo) -- see "the pipeline" below for how `--test`
-and `--dry-run` narrow that.
+`EMAIL_FROM`, `EMAIL_TO`, `X_SEED_ACCOUNTS` (digest), and `READWISE_API_KEY`
+(recommender). `HTML_SERVE_DIR` is optional, for both -- see "status page"
+below. `REDDIT_USER_AGENT` is optional, defaulting to a generic string with
+no username in it.
+
+Real identities -- email addresses, X handles -- live only in `.env`, never
+in `config.py`: this is a public repo, and anything in `config.py` is
+committed for the world to read. `EMAIL_TO_EXTRA` (extra digest recipients)
+and `X_SEED_ACCOUNTS` (the account universe is whoever these follow, so it
+names third parties too, not just the reader) are both comma-separated lists
+that work this way -- see "the pipeline" below for how `--test`/`--dry-run`
+narrow who a run mails.
 
 ### digest/
 
