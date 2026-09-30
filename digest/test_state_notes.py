@@ -2,8 +2,9 @@
 """Tests for the cross-run scratchpad notes mechanism.
 
 Behaviour and contracts: append/load round-tripping, the 5-entry FIFO cap,
-and trailer extraction -- including the AI digest's case, which never emits
-a trailer and must round-trip untouched.
+the long-running board's wholesale-replace semantics, and trailer
+extraction -- including the AI digest's case, which never emits a trailer
+and must round-trip untouched.
 """
 
 from datetime import datetime
@@ -51,21 +52,67 @@ def test_topics_get_separate_note_files(tmp_path, monkeypatch):
     assert "eu note" in state_notes.load("europe")
 
 
+def test_load_longrunning_with_no_prior_file_returns_the_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path)
+    assert "no long-running items" in state_notes.load_longrunning("europe")
+
+
+def test_save_then_load_longrunning_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path)
+    state_notes.save_longrunning("europe", "- Ex-PM immunity case: trial ongoing.")
+    assert "Ex-PM immunity case" in state_notes.load_longrunning("europe")
+
+
+def test_save_longrunning_replaces_wholesale_not_appends(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path)
+    state_notes.save_longrunning("europe", "- item A")
+    state_notes.save_longrunning("europe", "- item B")
+    out = state_notes.load_longrunning("europe")
+    assert "item B" in out and "item A" not in out
+
+
+def test_save_longrunning_with_blank_text_clears_the_board(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path)
+    state_notes.save_longrunning("europe", "- item A")
+    state_notes.save_longrunning("europe", "   ")
+    assert "no long-running items" in state_notes.load_longrunning("europe")
+
+
+def test_longrunning_topics_get_separate_boards(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path)
+    state_notes.save_longrunning("europe", "eu board item")
+    state_notes.save_longrunning("pandemic", "bio board item")
+    assert "eu board item" in state_notes.load_longrunning("europe")
+    assert "eu board item" not in state_notes.load_longrunning("pandemic")
+
+
 def test_extract_splits_trailer_from_the_mailed_html():
     html = ('<h3>Signals</h3><ul><li>thing</li></ul>'
             '<!-- STATE-NOTES-START -->\n'
             '<p>Covered <b>H5N1</b> spillover.</p>\n'
             '<!-- STATE-NOTES-END -->')
-    clean, notes = state_notes.extract(html)
+    clean, notes, longrunning = state_notes.extract(html)
     assert "STATE-NOTES" not in clean
     assert "<h3>Signals</h3><ul><li>thing</li></ul>" in clean
     assert notes == "Covered H5N1 spillover."
+    assert longrunning is None
+
+
+def test_extract_splits_both_trailers_from_the_mailed_html():
+    html = ('<h3>Signals</h3>'
+            '<!-- STATE-NOTES-START --><p>notes here</p><!-- STATE-NOTES-END -->'
+            '<!-- LONG-RUNNING-START --><p>board here</p><!-- LONG-RUNNING-END -->')
+    clean, notes, longrunning = state_notes.extract(html)
+    assert clean == "<h3>Signals</h3>"
+    assert notes == "notes here"
+    assert longrunning == "board here"
 
 
 def test_extract_with_no_trailer_round_trips_unchanged():
-    """The AI digest's template never asks for a trailer -- this is the whole
-    mechanism by which it is unaffected without any per-topic branching."""
+    """The AI digest's template never asks for either trailer -- this is the
+    whole mechanism by which it is unaffected without any per-topic branching."""
     html = "<h3>AI News</h3><ul><li>thing</li></ul>"
-    clean, notes = state_notes.extract(html)
+    clean, notes, longrunning = state_notes.extract(html)
     assert clean == html
     assert notes == ""
+    assert longrunning is None

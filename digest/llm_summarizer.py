@@ -377,6 +377,7 @@ class LLMSummarizer:
                 pages_content=format_pages(pages or []),
                 feed_content=feed_content or "(no feed items in this window)",
                 prior_notes=state_notes.load(topic.key),
+                longrunning=state_notes.load_longrunning(topic.key),
             )
 
         # Keep EVERY tweet by default. If the corpus has grown past what the

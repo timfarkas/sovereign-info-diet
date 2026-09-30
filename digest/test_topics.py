@@ -161,7 +161,7 @@ class TestEveryPromptHonoursTheInvariants:
                               window_days=t.window_days,
                               pages_content="P", feed_content="F",
                               tweets_content="T", posts_content="R",
-                              prior_notes="N")
+                              prior_notes="N", longrunning="L")
         assert "{" not in out.replace("{{", "").replace("}}", "")
 
     def test_has_a_system_message_and_a_blurb(self, t):

@@ -194,7 +194,7 @@ def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
     summarizer = LLMSummarizer()
     summary = summarizer.summarize_posts(posts, tweets, pages, topic=t,
                                          feed_items=feed_items)
-    summary, notes_entry = state_notes.extract(summary)
+    summary, notes_entry, longrunning = state_notes.extract(summary)
 
     banner = health_banner()
     if dropped := getattr(summarizer, "tweets_dropped", 0):
@@ -236,6 +236,8 @@ def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
         # a failed model call must not teach the next run about a digest no
         # reader ever saw.
         state_notes.append(t.key, notes_entry, datetime.now(timezone.utc))
+    if mailed and longrunning is not None:
+        state_notes.save_longrunning(t.key, longrunning)
 
     record_stats(t, posts, tweets, pages, feed_items, summarizer, summary,
                  shared, output_file, link_stats,
