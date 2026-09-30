@@ -40,10 +40,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import rss_scraper
+import state_notes
 import topics
 from link_fetcher import LinkFetcher, readable, unreadable
 from llm_summarizer import (LLMSummarizer, digest_stats, health_banner,
-                            read_health, wall_appendix)
+                            read_health)
 
 EXTRACTS = Path("extracts")
 
@@ -193,7 +194,7 @@ def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
     summarizer = LLMSummarizer()
     summary = summarizer.summarize_posts(posts, tweets, pages, topic=t,
                                          feed_items=feed_items)
-    summary += wall_appendix(pages)
+    summary, notes_entry = state_notes.extract(summary)
 
     banner = health_banner()
     if dropped := getattr(summarizer, "tweets_dropped", 0):
@@ -229,6 +230,12 @@ def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
         mailed = send_email(subject, Path(output_file).read_text())
     elif failed:
         print(f"[{t.key}] the model call failed -- not mailing an error as a digest")
+
+    if mailed and notes_entry:
+        # Only a real send earns a place in next run's memory -- a --dry-run or
+        # a failed model call must not teach the next run about a digest no
+        # reader ever saw.
+        state_notes.append(t.key, notes_entry, datetime.now(timezone.utc))
 
     record_stats(t, posts, tweets, pages, feed_items, summarizer, summary,
                  shared, output_file, link_stats,

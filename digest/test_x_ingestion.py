@@ -548,41 +548,6 @@ def test_prompt_tells_the_model_to_link_pages_it_could_not_read():
     assert "never drop a link just because it was unreadable" in T
 
 
-def test_wall_appendix_lists_every_unreadable_link():
-    from llm_summarizer import wall_appendix
-    out = wall_appendix(_pages())
-    assert 'href="https://openai.com/index/gpt6/"' in out
-    assert 'href="https://www.wsj.com/a"' in out
-    assert "https://ok.com/a" not in out          # that one we read; it is in the body
-    assert out.count("<li>") == 2
-
-
-def test_wall_appendix_renders_readable_labels_not_raw_urls():
-    """Asserted through wall_appendix, not through link_label: a green test on
-    the helper alone let a digest ship with unwired raw-URL labels."""
-    from llm_summarizer import wall_appendix
-    out = wall_appendix([{"url": "https://www.wsj.com/opinion/a-grail-test-99?st=y",
-                          "title": "", "text": "", "status": "skipped: HTTP 401"}])
-    assert ">wsj.com — a grail test 99<" in out
-    assert ">www.wsj.com/opinion" not in out
-    assert 'href="https://www.wsj.com/opinion/a-grail-test-99?st=y"' in out
-
-
-def test_wall_appendix_is_empty_when_everything_was_readable():
-    from llm_summarizer import wall_appendix
-    assert wall_appendix([{"url": "https://ok.com", "title": "t", "text": "x",
-                           "status": "ok"}]) == ""
-
-
-def test_wall_appendix_still_refuses_blocked_domains():
-    """Defence in depth: collect_links already filters these, but the invariant
-    'no social link leaves this pipeline' must not depend on that."""
-    from llm_summarizer import wall_appendix
-    out = wall_appendix([{"url": "https://x.com/a/status/1", "title": "tweet",
-                          "text": "", "status": "skipped: HTTP 403"}])
-    assert "x.com" not in out and "tweet" in out
-
-
 def test_walled_link_labels_are_readable_without_a_title():
     """A walled page has no title, and a raw URL truncated mid-querystring is
     not something you want in an email."""

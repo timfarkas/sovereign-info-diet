@@ -10,9 +10,9 @@ from pathlib import Path
 
 import re
 
-from link_fetcher import (LinkFetcher, format_pages, link_label, readable,
-                          unreadable)
+from link_fetcher import LinkFetcher, format_pages, readable, unreadable
 from x_scraper import is_blocked_link
+import state_notes
 
 load_dotenv(os.getenv("DOTENV_PATH") or None)
 
@@ -81,30 +81,6 @@ def format_tweets(tweets: List[Dict], limit: int = None) -> str:
         if t.get("external_links"):
             out += f"   external links: {', '.join(t['external_links'][:3])}\n"
     return out
-
-
-def wall_appendix(pages: List[Dict]) -> str:
-    """HTML list of links the pipeline could not read, so the human can.
-
-    Built in code rather than left to the model, because the value here is
-    exhaustiveness: this is the set of things nobody has read yet, and a model
-    deciding which of them to mention defeats the point.
-    """
-    blocked = unreadable(pages)
-    if not blocked:
-        return ""
-    rows = ""
-    for p in blocked:
-        why = p["status"].replace("skipped: ", "").replace("failed: ", "")
-        label = link_label(p["url"], p.get("title", ""))
-        rows += f'<li><a href="{p["url"]}">{label}</a> <em>({why})</em></li>\n'
-    # scrubbed like the model's own output: the no-social-links invariant holds
-    # here too, regardless of what upstream let through
-    return strip_blocked_links(
-        "\n<h3>Behind a Wall — You Can Probably Read These</h3>\n"
-        "<p><em>Linked from the posts above, but a paywall or bot-wall stopped me "
-        "from reading them. Nothing in the digest above reflects their actual "
-        "contents.</em></p>\n<ul>\n" + rows + "</ul>\n")
 
 
 def health_banner(path: str = "extracts/x_health.json") -> str:
@@ -400,6 +376,7 @@ class LLMSummarizer:
                 tweets_content=format_tweets(tws) or "(no X posts in this window)",
                 pages_content=format_pages(pages or []),
                 feed_content=feed_content or "(no feed items in this window)",
+                prior_notes=state_notes.load(topic.key),
             )
 
         # Keep EVERY tweet by default. If the corpus has grown past what the
