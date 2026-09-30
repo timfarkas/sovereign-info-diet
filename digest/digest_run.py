@@ -147,7 +147,8 @@ def load_shared(max_hours: float) -> Dict:
 # one topic
 # =============================================================================
 
-def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
+def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True,
+             full: bool = True) -> Dict:
     """Summarize, save, mail and record one topic. Returns a small result dict.
 
     Raises nothing the caller has to care about except genuinely unexpected
@@ -225,9 +226,10 @@ def run_topic(t: topics.Topic, shared: Dict, *, mail: bool = True) -> Dict:
         # Imported here, not at module scope: send_notification calls
         # load_dotenv() at import time, and a --dry-run must not depend on mail
         # config being present at all.
-        from send_notification import send_email
+        from send_notification import recipients_for, send_email
         subject = f"{t.subject} - {datetime.now().strftime('%Y-%m-%d')}"
-        mailed = send_email(subject, Path(output_file).read_text())
+        mailed = send_email(subject, Path(output_file).read_text(),
+                            to_email=recipients_for(full))
     elif failed:
         print(f"[{t.key}] the model call failed -- not mailing an error as a digest")
 
@@ -295,13 +297,26 @@ def record_stats(t, posts, tweets, pages, feed_items, summarizer, summary,
 # the run
 # =============================================================================
 
+def mail_mode(argv: List[str]) -> Tuple[bool, bool]:
+    """(mail, full) from CLI flags -- three tiers, checked in this order:
+
+    `--dry-run` / `--no-mail`: nothing is sent, regardless of `--test`.
+    `--test`: sent, but only to EMAIL_TO -- for checking a topic by hand
+        without spamming the full recipient list.
+    neither: the nightly cron path -- sent to every full-run recipient.
+    """
+    mail = "--no-mail" not in argv and "--dry-run" not in argv
+    full = "--test" not in argv
+    return mail, full
+
+
 def main(argv: List[str] = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     only = [a.split("=", 1)[1] for a in argv if a.startswith("--only=")]
     only += [argv[i + 1] for i, a in enumerate(argv)
              if a == "--only" and i + 1 < len(argv)]
     force = "--force" in argv
-    mail = "--no-mail" not in argv and "--dry-run" not in argv
+    mail, full = mail_mode(argv)
     list_only = "--list" in argv
 
     wanted = [t for t in topics.all_topics() if not only or t.key in only]
@@ -341,7 +356,7 @@ def main(argv: List[str] = None) -> int:
                                                else ""))
         ran = True
         try:
-            res = run_topic(t, shared, mail=mail)
+            res = run_topic(t, shared, mail=mail, full=full)
         except Exception as e:
             # One topic's failure is one topic's failure. Print it in full --
             # this job fails silently into a logfile and the traceback is the

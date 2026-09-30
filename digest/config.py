@@ -104,6 +104,13 @@ REDDIT_SELFTEXT_CHARS = 1200       # was 200 -- the model was reasoning about st
 REDDIT_COMMENT_CHARS = 500         # was 150
 
 
+# --- email recipients ---------------------------------------------------------
+# A full run (the nightly cron path) mails EMAIL_TO (.env) plus everyone here.
+# Plain addresses, not secrets, so they live in code rather than the
+# gitignored .env -- see send_notification.recipients_for.
+EMAIL_RECIPIENTS_EXTRA = ["drew.spartz@gmail.com"]
+
+
 # --- X/Twitter ingestion (via twitterapi.io) ---------------------------------
 # The account universe is the union of whoever these accounts follow.
 X_SEED_ACCOUNTS = ["FarkasTim", "IsaakFreeman", "johannes_hage"]
