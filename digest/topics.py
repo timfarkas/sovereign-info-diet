@@ -70,16 +70,17 @@ class Topic:
     # -- derived ------------------------------------------------------------
     @property
     def stats_kind(self) -> str:
-        """History file under data/run_stats/.
+        """History file under data/run_stats/, e.g. `ai-digest.jsonl`.
 
-        The AI topic keeps writing `digest` so its existing history, and the
-        existing ai-digest/ page, carry on unbroken.
+        Streamlined 2026-09-30 to a uniform `<key>-digest` for every topic,
+        AI included. AI previously kept the bare `digest` name for backward
+        compatibility; that history file was renamed on disk to match.
         """
-        return "digest" if self.key == "ai" else f"digest-{self.key}"
+        return f"{self.key}-digest"
 
     @property
     def page(self) -> str:
-        return "ai-digest" if self.key == "ai" else f"digest-{self.key}"
+        return f"{self.key}-digest"
 
     @property
     def subject(self) -> str:

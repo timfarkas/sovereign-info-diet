@@ -22,7 +22,6 @@ STATS_KEEP_RUNS = 180          # ~6 months of nightly rows, then the oldest fall
 # Opt-in: unset HTML_SERVE_DIR and nothing under html_status/ ever writes a
 # page. No code-level default -- see the "status page" section of README.md.
 HTML_SERVE_DIR = os.getenv("HTML_SERVE_DIR")
-DIGEST_PAGE = "ai-digest"      # -> <HTML_SERVE_DIR>/ai-digest/
 RECOMMENDER_PAGE = "recommender"
 
 
@@ -32,15 +31,16 @@ def digest_stats_kind(topic_key):
     Duplicated rather than imported on purpose: importing digest/topics.py would
     drag digest/config.py, its environment and its dependencies into the shared
     renderer, which is exactly what this module's docstring says it must not do.
-    The AI topic keeps the bare `digest` name so months of existing history stay
-    readable with no migration.
+    Streamlined 2026-09-30 to a uniform `<key>-digest`, AI included -- its
+    history file was renamed on disk (`digest.jsonl` -> `ai-digest.jsonl`) to
+    match rather than keeping the old name as a special case.
     """
-    return "digest" if topic_key == "ai" else f"digest-{topic_key}"
+    return f"{topic_key}-digest"
 
 
 def digest_page(topic_key):
     """Directory under HTML_SERVE_DIR for a topic. Mirrors Topic.page."""
-    return DIGEST_PAGE if topic_key == "ai" else f"digest-{topic_key}"
+    return f"{topic_key}-digest"
 
 
 def digest_topic_keys():
@@ -56,9 +56,8 @@ def digest_topic_keys():
     recommender/test_stats.py, which renders both pages into an empty tmpdir.
     """
     found = ["ai"]
-    for f in sorted(Path(STATS_DIR).glob("digest*.jsonl")):
-        stem = f.stem
-        key = "ai" if stem == "digest" else stem[len("digest-"):]
+    for f in sorted(Path(STATS_DIR).glob("*-digest.jsonl")):
+        key = f.stem[:-len("-digest")]
         if key not in found:
             found.append(key)
     return sorted(found, key=lambda k: (k != "ai", k))

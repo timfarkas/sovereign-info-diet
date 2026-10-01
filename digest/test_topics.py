@@ -90,10 +90,10 @@ class TestAIDigestUnchanged:
                 feed_item(title="GPT-6 released")]
         assert topics.topic("ai").select_feed_items(pool) == []
 
-    def test_history_and_page_names_are_the_pre_existing_ones(self):
+    def test_history_and_page_names_follow_the_uniform_scheme(self):
         ai = topics.topic("ai")
-        assert ai.stats_kind == "digest"       # months of existing history
-        assert ai.page == "ai-digest"          # the existing served directory
+        assert ai.stats_kind == "ai-digest"    # renamed from `digest` 2026-09-30
+        assert ai.page == "ai-digest"          # unchanged -- already this name
         assert ai.subject == "AI Digest"       # the existing mail subject
 
     def test_is_always_due_with_no_state_at_all(self):
