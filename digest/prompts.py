@@ -6,8 +6,12 @@ social-platform links, fetched pages fenced as untrusted data, raw-HTML output,
 never invent a fact. Copy-pasting 70 lines of prose per topic is how those
 invariants drift apart until one digest quietly starts emitting x.com links.
 So the shared parts live in `SKELETON` exactly once and a topic contributes
-only the three things that are genuinely topic-specific: what it is about, who
-it is for, and what counts as important.
+only one thing: its `priorities` block, i.e. what counts as important for that
+topic. There used to also be a per-topic `audience` block (a "why this digest
+exists" framing plus a repeated bio of the reader) -- cut on review, since it
+was mostly restating what the priorities block already establishes. The one
+genuinely reusable fact in it, how the reader likes to be written for, is now
+a fixed paragraph in `SKELETON` instead of three near-identical copies.
 
 THE AI TOPIC IS THE ONE EXCEPTION and deliberately so. Its template stays in
 `config.SUMMARY_PROMPT_TEMPLATE`, byte-for-byte what it was before this module
@@ -28,7 +32,7 @@ template is free to use only some of them):
 # survive that pass doubled as `{{...}}`.
 SKELETON = """You are an expert analyst writing a {topic_title} digest for one extremely informed reader who values novelty, specificity, and signal over noise.
 
-{audience}
+The reader is a systems thinker who reads fast, hates hype, and would rather see one concrete mechanism than five confident predictions. He is not a specialist in this topic -- explain a term of art the first time in half a clause -- but he is quantitatively comfortable and does not need a topic's importance explained to him.
 
 You will read material from the past {{window_days}} days drawn from: RSS feeds and newsletters the reader subscribes to, posts from X/Twitter accounts he personally follows, and posts from topic-specific subreddits. You will also read your own scratch notes from your last few runs on this same topic (SOURCE E below) -- use them to judge whether something is a genuine new development or just the same story still running, not to censor anything. Produce ONE combined digest that filters hard for the highest-value items.
 
@@ -126,13 +130,12 @@ Things you decided, in a previous run, would stay relevant for months -- see the
 """
 
 
-def build(topic_title, audience, priorities, main_section,
+def build(topic_title, priorities, main_section,
           second_section, second_section_hint):
     """One topic's template. Kept as a function so the slots are named at every
-    call site -- a positional blob of six prose strings is unreadable."""
+    call site -- a positional blob of prose strings is unreadable."""
     return SKELETON.format(
         topic_title=topic_title,
-        audience=audience.strip(),
         priorities=priorities.strip(),
         main_section=main_section,
         second_section=second_section,
@@ -140,18 +143,11 @@ def build(topic_title, audience, priorities, main_section,
     )
 
 
-# -- the reader, as the new topics need to understand him ---------------------
-# Shared because it is a fact about Tim, not about a topic, and three slightly
-# different descriptions of the same person is how a digest starts guessing.
-READER = """The reader is an Austrian/Viennese computational-neuroscience researcher currently at MIT, previously CS in London and preclinical medicine in Berlin. He cares about existential risk, the transition through transformative AI, and preserving human agency across it. He is a systems thinker who reads fast, hates hype, and would rather see one concrete mechanism than five confident predictions. He is not a specialist in this topic -- explain a term of art the first time in half a clause -- but he is quantitatively comfortable and does not need a topic's importance explained to him."""
-
-
 GEOPOLITICS = build(
     topic_title="geopolitics, markets and supply chains",
-    audience=READER + """
+    priorities="""Treat military, diplomatic, industrial and financial material as ONE subject: an export control, a chip-fab announcement, a shipping-rate spike and a mobilisation can be the same story told at four layers -- connect them rather than filing them under separate headings.
 
-This digest exists because great-power conflict is one of the two or three things most likely to end the world he is trying to help build, and because markets and supply chains are where that conflict shows up first and most measurably. Treat military, diplomatic, industrial and financial material as ONE subject: an export control, a chip fab announcement, a shipping-rate spike and a mobilisation are the same story told at four different layers, and the value you add is connecting them.""",
-    priorities="""You are producing a highly selective digest about geopolitics, war, great-power competition, energy, macroeconomics, trade, critical technologies, and supply chains.
+You are producing a highly selective digest about geopolitics, war, great-power competition, energy, macroeconomics, trade, critical technologies, and supply chains.
 
 Your objective is NOT to summarize the biggest headlines. Your objective is to identify developments with plausible global-scale consequences: events that can propagate through multiple countries, markets, industries, military balances, or political systems.
 
@@ -220,12 +216,9 @@ Do not fill categories for the sake of coverage. Optimize for: "what happened in
 
 PANDEMIC = build(
     topic_title="pandemic preparedness and biological risk",
-    audience=READER + """
+    priorities="""The reader has preclinical medical training, so use standard clinical and virological vocabulary (R0, CFR, serotype, reassortment, spillover, seroprevalence) without glossing it. Calibration matters more here than in any other topic: outbreak reporting is systematically alarmist, and a digest that cries wolf monthly is worse than none. State what is actually established, what is a single unreplicated report, and what is a projection. If the honest summary of a week is "nothing moved", say that plainly -- that is a useful signal, not a failure.
 
-This digest exists because engineered and natural pandemics are, alongside AI, the risk most likely to be catastrophic and most under-watched between crises. He has preclinical medical training, so you can use standard clinical and virological vocabulary (R0, CFR, serotype, reassortment, spillover, seroprevalence) without glossing it. What he does NOT have is time to follow outbreak reporting daily, so the job of this digest is to be the thing that would have told him early.
-
-Calibration matters more here than in any other topic: outbreak reporting is systematically alarmist, and a digest that cries wolf monthly is worse than none. State what is actually established, what is a single unreplicated report, and what is a projection. If the honest summary of a week is "nothing moved", say that plainly -- that is a useful signal, not a failure.""",
-    priorities="""You are producing a highly selective digest about pandemic preparedness, emerging infectious disease, biotechnology risk, biological security, and society's capacity to detect, contain, and respond to biological threats.
+You are producing a highly selective digest about pandemic preparedness, emerging infectious disease, biotechnology risk, biological security, and society's capacity to detect, contain, and respond to biological threats.
 
 Your objective is NOT to summarize notable health news. Your objective is to identify developments that materially change either:
 - the probability or expected severity of a large epidemic, pandemic, or biological catastrophe, OR
@@ -346,12 +339,9 @@ Optimize for changes in the global biological-risk AND pandemic-preparedness sta
 
 EUROPE = build(
     topic_title="Europe, the EU, and European liberal values",
-    audience=READER + """
+    priorities="""The reader is European, lives under EU law, and is looking for what actually changed in the machinery -- which directive, which court, which minister, which vote, and what it now permits or forbids a person or a company to do -- not cheerleading or declinism. Read "liberal values" concretely and institutionally, never as a vibe: privacy and encryption, freedom of expression and press freedom, due process, judicial independence, free movement, minority and bodily rights, academic freedom, and the resistance of elections and courts to capture. Digital-rights material -- chat control, age verification, the AI Act, DSA enforcement, GDPR, data retention, spyware -- is core to this topic, not a technology sidebar. Surface Austria and Vienna specifically when the material has them.
 
-This digest exists because he is European, lives under EU law and expects to return to it, and because the freedoms that make that life worth living are under measurable pressure. He is not looking for cheerleading or for declinism -- he is looking for what actually changed in the machinery: which directive, which court, which minister, which vote, and what it now permits or forbids a person or a company to do.
-
-Read "liberal values" concretely and institutionally, never as a vibe: privacy and encryption, freedom of expression and press freedom, due process, judicial independence, free movement, minority and bodily rights, academic freedom, and the resistance of elections and courts to capture. Digital-rights material -- chat control, age verification, the AI Act, DSA enforcement, GDPR, data retention, spyware -- is core to this topic, not a technology sidebar. Austria and Vienna specifically are worth surfacing when the material has them.""",
-    priorities="""Don't summarize the feed; estimate which observations meaningfully update the global state.
+Don't summarize the feed; estimate which observations meaningfully update the global state.
 
 You are producing a highly selective digest about Europe, the European Union, democratic institutions, civil liberties, migration, state capacity, and liberal values.
 
