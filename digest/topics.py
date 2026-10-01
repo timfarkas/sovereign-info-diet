@@ -284,8 +284,10 @@ GEOPOLITICS = Topic(
     every_n_days=3,
     window_days=3,
     lookback_hours=76,          # 3 days plus cron slack
-    subreddits=("geopolitics", "CredibleDefense", "LessCredibleDefence",
-                "Economics", "supplychain"),
+    # LessCredibleDefence dropped 2026-09-30: it's CredibleDefense's own
+    # meme/shitpost spinoff sub (the name is the joke), not a second source of
+    # analysis -- same failure mode as AskEurope below, just for this topic.
+    subreddits=("geopolitics", "CredibleDefense", "Economics", "supplychain"),
     keywords=GEOPOLITICS_KEYWORDS,
     feeds=GEOPOLITICS_FEEDS,
     # Verified 2026-09-29 on BOTH axes: reachable AND actually publishing.
@@ -426,7 +428,12 @@ EUROPE = Topic(
     every_n_days=3,
     window_days=3,
     lookback_hours=76,
-    subreddits=("europe", "EuropeanUnion", "YUROP", "AskEurope"),
+    # YUROP and AskEurope dropped 2026-09-30 on signal/noise review: YUROP is
+    # a meme sub (the misspelling is the joke, content is nationalist image
+    # macros) and AskEurope is casual "what's your country like" chitchat --
+    # neither carries news or analysis. europe and EuropeanUnion are real
+    # discussion/news subs and stay.
+    subreddits=("europe", "EuropeanUnion"),
     keywords=EUROPE_KEYWORDS,
     feeds=EUROPE_FEEDS,
     # euractiv.com/feed/ 302s to a consent wall -- dropped. derStandard is
