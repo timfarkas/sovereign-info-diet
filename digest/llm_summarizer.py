@@ -10,9 +10,9 @@ from pathlib import Path
 
 import re
 
-from link_fetcher import LinkFetcher, format_pages, readable, unreadable
+from link_fetcher import (LinkFetcher, format_pages, link_label, readable,
+                          unreadable)
 from x_scraper import is_blocked_link
-import state_notes
 
 load_dotenv(os.getenv("DOTENV_PATH") or None)
 
@@ -37,31 +37,6 @@ def by_engagement(tweets: List[Dict]) -> List[Dict]:
                   reverse=True)
 
 
-def format_feed_items(items: List[Dict]) -> str:
-    """Render subscribed-feed items for the prompt.
-
-    Deliberately flat and labelled rather than JSON: the model reads this as
-    prose, and a `link:` line it can copy verbatim is what keeps it from
-    inventing URLs. Blocked links are dropped here as well as on the way out --
-    a feed item whose source_url is a t.co redirect is not a citable source.
-    """
-    out = ""
-    for i, it in enumerate(items or [], 1):
-        out += f"\n{i}. {it.get('title') or '(untitled)'}\n"
-        by = " / ".join(x for x in (it.get("site"), it.get("author")) if x)
-        if by:
-            out += f"   {by}\n"
-        when = (it.get("published") or "")[:10]
-        if when:
-            out += f"   published: {when}\n"
-        url = it.get("url") or ""
-        if url and not is_blocked_link(url):
-            out += f"   link: {url}\n"
-        if it.get("summary"):
-            out += f"   summary: {it['summary']}\n"
-    return out
-
-
 def format_tweets(tweets: List[Dict], limit: int = None) -> str:
     """Render tweets for the prompt, highest-engagement first."""
     if limit is None:
@@ -81,6 +56,30 @@ def format_tweets(tweets: List[Dict], limit: int = None) -> str:
         if t.get("external_links"):
             out += f"   external links: {', '.join(t['external_links'][:3])}\n"
     return out
+
+
+def wall_appendix(pages: List[Dict]) -> str:
+    """HTML list of links the pipeline could not read, so the human can.
+
+    Built in code rather than left to the model, because the value here is
+    exhaustiveness: this is the set of things nobody has read yet, and a model
+    deciding which of them to mention defeats the point.
+    """
+    blocked = unreadable(pages)
+    if not blocked:
+        return ""
+    rows = ""
+    for p in blocked:
+        why = p["status"].replace("skipped: ", "").replace("failed: ", "")
+        label = link_label(p["url"], p.get("title", ""))
+        rows += f'<li><a href="{p["url"]}">{label}</a> <em>({why})</em></li>\n'
+    # scrubbed like the model's own output: the no-social-links invariant holds
+    # here too, regardless of what upstream let through
+    return strip_blocked_links(
+        "\n<h3>Behind a Wall — You Can Probably Read These</h3>\n"
+        "<p><em>Linked from the posts above, but a paywall or bot-wall stopped me "
+        "from reading them. Nothing in the digest above reflects their actual "
+        "contents.</em></p>\n<ul>\n" + rows + "</ul>\n")
 
 
 def health_banner(path: str = "extracts/x_health.json") -> str:
@@ -182,31 +181,19 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
                  reddit_health=None, x_fresh=True, reddit_fresh=True,
                  x_note="", reddit_note="", output_file=None,
                  x_file=None, reddit_file=None,
-                 link_stats=None, topic=None, feed_items=None,
-                 rss_health=None, rss_fresh=True, rss_note="",
-                 rss_file=None) -> Dict[str, Any]:
+                 link_stats=None) -> Dict[str, Any]:
     """One run's worth of numbers, as a plain dict, for the status page.
 
     Pure: it reads what the run already computed and returns data. Nothing here
     touches the network, and nothing here is allowed to be the reason a digest
     does not get mailed.
-
-    Every new argument defaults to the AI digest's old behaviour, so a row for
-    the AI topic has the same keys and the same values it had before topics
-    existed -- which is what lets the existing ai-digest page keep reading its
-    existing history without a migration.
     """
     from collections import Counter
-    from config import (LINK_FETCH_MAX_PAGES, SORT_BY, SUMMARY_SERVICE_TIER)
-    import topics as topics_mod
-    topic = topic or topics_mod.topic("ai")
-    SUBREDDITS = list(topic.subreddits)
-    SUMMARY_COST_CEILING_USD = topic.cost_ceiling_usd
-    TIME_HORIZON_DAYS = topic.window_days
+    from config import (LINK_FETCH_MAX_PAGES, SORT_BY, SUBREDDITS,
+                        SUMMARY_COST_CEILING_USD, SUMMARY_SERVICE_TIER,
+                        TIME_HORIZON_DAYS)
     x_health = x_health if x_health is not None else {}
     reddit_health = reddit_health if reddit_health is not None else {}
-    rss_health = rss_health if rss_health is not None else {}
-    feed_items = feed_items or []
     usage = dict(summarizer.last_usage or {})
     failed = summary.startswith("Failed to generate summary")
 
@@ -215,12 +202,6 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
         problems.append(f"no fresh X data ({x_note})")
     if not reddit_fresh:
         problems.append(f"no fresh reddit data ({reddit_note})")
-    if topic.feeds and not rss_fresh:
-        problems.append(f"no fresh feed data ({rss_note})")
-    if rss_health.get("status") not in (None, "healthy"):
-        problems.append(f"feed ingestion reported status {rss_health.get('status')}")
-    for url, err in (rss_health.get("direct", {}).get("feeds_failed") or {}).items():
-        problems.append(f"feed {url} failed: {err}")
     if x_health.get("status") not in (None, "healthy"):
         problems.append(f"X ingestion reported status {x_health.get('status')}")
     if reddit_health.get("failed"):
@@ -241,15 +222,6 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
         "ok": not failed,
         "window_days": TIME_HORIZON_DAYS,
         "problems": problems,
-        "topic": {
-            "key": topic.key,
-            "name": topic.name,
-            "every_n_days": topic.every_n_days,
-            "priorities": topic.priorities_blurb,
-            "prompt": topic.prompt,
-            "state_notes": state_notes.load(topic.key),
-            "longrunning": state_notes.load_longrunning(topic.key),
-        },
         "reddit": {
             "total": len(posts),
             "by_subreddit": dict(Counter(p.get("subreddit") for p in posts)),
@@ -261,17 +233,6 @@ def digest_stats(posts, tweets, pages, summarizer, summary, *, x_health=None,
             "note": reddit_note,
             "file": str(reddit_file) if reddit_file else None,
             "health": reddit_health,
-        },
-        "feeds": {
-            "total": len(feed_items),
-            "by_feed": dict(Counter(i.get("feed") or i.get("site") or "(unknown)"
-                                    for i in feed_items).most_common()),
-            "by_source": dict(Counter(i.get("source") for i in feed_items)),
-            "with_link": sum(1 for i in feed_items if i.get("url")),
-            "fresh": rss_fresh,
-            "note": rss_note,
-            "file": str(rss_file) if rss_file else None,
-            "health": rss_health,
         },
         "x": {
             "total": len(tweets),
@@ -322,21 +283,11 @@ class LLMSummarizer:
         self.prompt_chars = 0
         
     def create_summary_prompt(self, posts: List[Dict], tweets: List[Dict] = None,
-                              pages: List[Dict] = None, *, topic=None,
-                              feed_items: List[Dict] = None) -> str:
-        """Create the summarization prompt for one topic.
-
-        `topic=None` means the AI digest, which is how every pre-multi-topic
-        caller (and every existing test) still gets exactly the prompt it got
-        before: prompts.AI, the AI window, no feed items.
-
-        Every template is handed the full slot set; str.format ignores keys a
-        template does not reference (the AI one has no {feed_content}), so one
-        build() serves all four topics with no branching.
-        """
-        import topics as topics_mod
-        topic = topic or topics_mod.topic("ai")
-
+                              pages: List[Dict] = None) -> str:
+        """Create the summarization prompt for reddit posts + X tweets"""
+        
+        from config import TIME_HORIZON_DAYS, SUMMARY_PROMPT_TEMPLATE
+        
         from config import REDDIT_SELFTEXT_CHARS, REDDIT_COMMENT_CHARS
 
         def clip(text, n):
@@ -362,20 +313,15 @@ class LLMSummarizer:
                     posts_content += (f"   - [{comment['score']}pts] "
                                       f"{clip(comment['body'], REDDIT_COMMENT_CHARS)}\n")
         
-        from config import CHARS_PER_TOKEN, SUMMARY_MODEL_PRICE
-        ceiling = topic.cost_ceiling_usd
-
-        feed_content = format_feed_items(feed_items or [])
+        from config import (CHARS_PER_TOKEN, SUMMARY_COST_CEILING_USD,
+                            SUMMARY_MODEL_PRICE)
 
         def build(tws):
-            return topic.prompt.format(
-                window_days=topic.window_days,
+            return SUMMARY_PROMPT_TEMPLATE.format(
+                TIME_HORIZON_DAYS=TIME_HORIZON_DAYS,
                 posts_content=posts_content or "(no reddit posts in this window)",
                 tweets_content=format_tweets(tws) or "(no X posts in this window)",
                 pages_content=format_pages(pages or []),
-                feed_content=feed_content or "(no feed items in this window)",
-                prior_notes=state_notes.load(topic.key),
-                longrunning=state_notes.load_longrunning(topic.key),
             )
 
         # Keep EVERY tweet by default. If the corpus has grown past what the
@@ -385,7 +331,8 @@ class LLMSummarizer:
         kept = by_engagement(tweets or [])
         price_in = SUMMARY_MODEL_PRICE[0]
         # leave a tenth of the ceiling for output tokens
-        budget_chars = int((ceiling * 0.9 / price_in) * 1e6 * CHARS_PER_TOKEN)
+        budget_chars = int((SUMMARY_COST_CEILING_USD * 0.9 / price_in) * 1e6
+                           * CHARS_PER_TOKEN)
         prompt = build(kept)
         self.tweets_dropped = 0
         while len(prompt) > budget_chars and len(kept) > 25:
@@ -394,34 +341,28 @@ class LLMSummarizer:
             self.tweets_dropped += drop
             prompt = build(kept)
         if self.tweets_dropped:
-            print(f"⚠ prompt over the ${ceiling:.2f} budget: dropped "
+            print(f"⚠ prompt over the ${SUMMARY_COST_CEILING_USD:.2f} budget: dropped "
                   f"the {self.tweets_dropped} lowest-engagement tweets of "
                   f"{len(tweets or [])} to fit")
         return prompt
     
     def summarize_posts(self, posts: List[Dict], tweets: List[Dict] = None,
-                        pages: List[Dict] = None, *, topic=None,
-                        feed_items: List[Dict] = None) -> str:
-        """Generate one topic's summary. `topic=None` is the AI digest."""
-
-        import topics as topics_mod
-        topic = topic or topics_mod.topic("ai")
-
-        tweets, pages, feed_items = tweets or [], pages or [], feed_items or []
-        print(f"\n[{topic.key}] Analyzing {len(posts)} reddit posts + "
-              f"{len(tweets)} X posts + {len(feed_items)} feed items "
+                        pages: List[Dict] = None) -> str:
+        """Generate a summary of all posts"""
+        
+        tweets, pages = tweets or [], pages or []
+        print(f"\nAnalyzing {len(posts)} reddit posts + {len(tweets)} X posts "
               f"+ {len(readable(pages))} read pages "
               f"({len(unreadable(pages))} walled but still linkable) "
               f"with {self.model}...")
-
-        prompt = self.create_summary_prompt(posts, tweets, pages, topic=topic,
-                                            feed_items=feed_items)
+        
+        prompt = self.create_summary_prompt(posts, tweets, pages)
         self.prompt_chars = len(prompt)
         print(f"Prompt is {len(prompt):,} chars")
         
         from config import SUMMARY_SERVICE_TIER
         messages = [
-            {"role": "system", "content": topic.system},
+            {"role": "system", "content": "You are a sharp, insightful AI/tech news analyst with a good sense of humor."},
             {"role": "user", "content": prompt},
         ]
         # reasoning models reject temperature / max_tokens
@@ -453,28 +394,14 @@ class LLMSummarizer:
             return f"Failed to generate summary: {str(e)}"
     
     def save_summary(self, summary: str, posts_analyzed: int, filename: str = None,
-                     tweets_analyzed: int = 0, banner: str = "", footer: str = "",
-                     *, topic=None, feeds_analyzed: int = 0):
-        """Save the summary to a file.
-
-        The AI digest keeps writing `summary_<date>.html` and keeps its old
-        `<h1>AI Digest - ...` heading and its old counts line -- that file is
-        what `send_notification.send_summary_email()` reaches for by hand and
-        what the last few months of history look like. New topics are namespaced
-        `summary_<key>_<date>.html` so the two never collide.
-        """
-        import topics as topics_mod
-        topic = topic or topics_mod.topic("ai")
-
+                     tweets_analyzed: int = 0, banner: str = "", footer: str = ""):
+        """Save the summary to a file"""
+        
+        from config import TIME_HORIZON_DAYS
+        
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d")
-            stem = "summary" if topic.key == "ai" else f"summary_{topic.key}"
-            filename = f"{stem}_{timestamp}.html"
-
-        counts = f"Analyzed {tweets_analyzed} X posts and {posts_analyzed} Reddit posts"
-        if topic.key != "ai":
-            counts = (f"Analyzed {feeds_analyzed} feed articles, {tweets_analyzed} "
-                      f"X posts and {posts_analyzed} Reddit posts")
+            filename = f"summary_{timestamp}.html"
 
         output_dir = Path("extracts/summaries")
         output_dir.mkdir(exist_ok=True, parents=True)
@@ -482,8 +409,8 @@ class LLMSummarizer:
         filepath = output_dir / filename
 
         # add header
-        full_content = f"""<h1>{topic.subject} - {datetime.now().strftime("%Y-%m-%d")}</h1>
-<p><em>{counts} from the past {topic.window_days} days</em></p>
+        full_content = f"""<h1>AI Digest - {datetime.now().strftime("%Y-%m-%d")}</h1>
+<p><em>Analyzed {tweets_analyzed} X posts and {posts_analyzed} Reddit posts from the past {TIME_HORIZON_DAYS} days</em></p>
 {banner}<hr>
 {summary}
 <hr>
@@ -498,11 +425,108 @@ class LLMSummarizer:
 
 
 if __name__ == "__main__":
-    # The orchestration that used to live here moved to digest_run.py when the
-    # pipeline went multi-topic -- there is one code path now, and the AI digest
-    # is a row in topics.py rather than a set of constants inlined below. Kept as
-    # an alias because `python llm_summarizer.py` is what every runbook, cron
-    # line and muscle memory says, and it still means "produce the AI digest".
-    import digest_run
+    import glob
+    import time
 
-    raise SystemExit(digest_run.main(["--only", "ai"]))
+    MAX_AGE_HOURS = 20  # a daily pipeline: anything older than this is yesterday's
+
+    def _latest_fresh(pattern):
+        """Newest matching file, but only if it is from THIS run's window.
+
+        Without this guard a failed leg silently falls back to yesterday's dump
+        and Tim gets stale news presented as today's. Staler than no news.
+        """
+        hits = sorted(glob.glob(pattern), key=lambda f: Path(f).stat().st_mtime)
+        if not hits:
+            return None, "no file"
+        newest = hits[-1]
+        age_h = (time.time() - Path(newest).stat().st_mtime) / 3600
+        if age_h > MAX_AGE_HOURS:
+            return None, f"{newest} is {age_h:.1f}h old (stale, ignored)"
+        return newest, f"{newest} ({age_h:.1f}h old)"
+
+    reddit_file, reddit_why = _latest_fresh("extracts/reddit_data_*.json")
+    x_file, x_why = _latest_fresh("extracts/x_data_*.json")
+
+    posts = json.load(open(reddit_file)) if reddit_file else []
+    tweets = json.load(open(x_file)) if x_file else []
+    print(f"Loaded {len(posts)} reddit posts from {reddit_why}")
+    print(f"Loaded {len(tweets)} X posts from {x_why}")
+
+    if not posts and not tweets:
+        raise SystemExit("no input from either source -- refusing to mail an empty digest")
+
+    from config import LINK_FETCH_ENABLED, LINK_FETCH_MAX_PAGES, LINK_FETCH_MAX_CHARS
+    pages, link_stats = [], {}
+    if LINK_FETCH_ENABLED:
+        # a fetch leg that dies must not take the digest with it
+        try:
+            fetcher = LinkFetcher()
+            pages = fetcher.enrich(tweets, posts, limit=LINK_FETCH_MAX_PAGES,
+                                   max_chars=LINK_FETCH_MAX_CHARS)
+            link_stats = dict(fetcher.stats)
+        except Exception as e:
+            print(f"[links] enrichment failed, continuing without it: {e}")
+
+    summarizer = LLMSummarizer()
+    summary = summarizer.summarize_posts(posts, tweets, pages)
+    summary += wall_appendix(pages)
+
+    banner = health_banner()
+    if summarizer_dropped := getattr(summarizer, "tweets_dropped", 0):
+        banner += (f'<p><strong>⚠ Corpus trimmed to fit the budget</strong> — the '
+                   f'{summarizer_dropped} lowest-engagement X posts of {len(tweets)} '
+                   f'were left out of the analysis. Raise SUMMARY_COST_CEILING_USD or '
+                   f'prune X_SEED_ACCOUNTS.</p>')
+    if not x_file:
+        banner += (f'<p><strong>⚠ No fresh X data</strong> — {x_why}. '
+                   f'The digest below is Reddit-only.</p>')
+    if not reddit_file:
+        banner += (f'<p><strong>⚠ No fresh Reddit data</strong> — {reddit_why}.</p>')
+
+    output_file = summarizer.save_summary(summary, len(posts),
+                                          tweets_analyzed=len(tweets),
+                                          banner=banner,
+                                          footer=(f" — ${summarizer.last_cost:.3f}"
+                                                  f", {len(readable(pages))} pages read"
+                                                  f", {len(unreadable(pages))} walled"
+                                                  if summarizer.last_cost else ""))
+
+    print("\n" + "="*60)
+    print(summary)
+    print("="*60)
+
+    # Status page. Wrapped because a rendering bug must never be the reason the
+    # digest does not go out -- but it prints the traceback rather than
+    # swallowing it, so a broken page is loud in the log instead of invisible.
+    try:
+        import sys
+        # html_status/ is a repo-root sibling of this folder, not a dependency
+        # installed anywhere on sys.path -- add the root once, here, rather
+        # than assuming whoever invoked this script already did.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from html_status import stats_page, stats_store
+        row = digest_stats(
+            posts, tweets, pages, summarizer, summary,
+            x_health=read_health("extracts/x_health.json"),
+            reddit_health=read_health("extracts/reddit_health.json"),
+            x_fresh=bool(x_file), reddit_fresh=bool(reddit_file),
+            x_note=x_why, reddit_note=reddit_why,
+            # Absolute: this process's cwd is digest/, and html_status/ lives a
+            # level up with no way to know that on its own -- resolve here,
+            # once, rather than making the shared renderer guess an anchor.
+            x_file=str(Path(x_file).resolve()) if x_file else None,
+            reddit_file=str(Path(reddit_file).resolve()) if reddit_file else None,
+            output_file=output_file, link_stats=link_stats,
+        )
+        stats_store.record("digest", row)          # unconditional: cheap history
+        written = stats_page.render_digest_page()    # opt-in: needs HTML_SERVE_DIR
+        if written:
+            print(f"[stats] wrote {written}")
+        else:
+            print("[stats] recorded to data/run_stats -- page rendering is off "
+                  "(set HTML_SERVE_DIR in .env to turn it on)")
+    except Exception:
+        import traceback
+        print("[stats] status page failed -- the digest itself is unaffected:")
+        traceback.print_exc()
