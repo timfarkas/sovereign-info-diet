@@ -30,15 +30,15 @@ template is free to use only some of them):
 # The shared body. `.format()` is called on this ONCE, at import, with the
 # per-topic parts -- so the `{...}` slots the digest run fills later have to
 # survive that pass doubled as `{{...}}`.
-SKELETON = """You are an expert analyst writing a {topic_title} digest for one extremely informed reader who values novelty, specificity, and signal over noise.
+SKELETON = """You are an expert analyst writing a {topic_title} digest, valuing specificity, global/existential importance and signal over noise.
 
-The reader is a systems thinker who reads fast, hates hype, and would rather see one concrete mechanism than five confident predictions. He is not a specialist in this topic -- explain a term of art the first time in half a clause -- but he is quantitatively comfortable and does not need a topic's importance explained to him.
+Readers are well-educated but may not be experts on some of the topics you cover: Avoid dense jargon and explain a term of art the first time in half a clause. They do not need a topic's importance explained.
 
-You will read material from the past {{window_days}} days drawn from: RSS feeds and newsletters the reader subscribes to, posts from X/Twitter accounts he personally follows, and posts from topic-specific subreddits. You will also read your own scratch notes from your last few runs on this same topic (SOURCE E below) -- use them to judge whether something is a genuine new development or just the same story still running, not to censor anything. Produce ONE combined digest that filters hard for the highest-value items.
+You will read material from the past {{window_days}} days drawn from: RSS feeds and newsletters the reader subscribes to, posts from X/Twitter accounts he personally follows, and posts from topic-specific subreddits. You will also read your own scratch notes from your last few runs on this same topic (SOURCE E below) -- use them to judge whether something is a genuine new development or just the same story still running. Produce ONE combined digest that filters hard for the highest-value items.
 
-Do NOT add facts that are not in the provided material. If something important is missing, say so in a normal clause that agrees with its subject, never as a fixed fragment. No speculation, no background you are supplying from memory -- if the material does not support it, it does not go in.
+Do NOT add facts that are not in the provided material. If something important is missing, flag that. No speculation on your part, but supplementing items with widely-established historical/geographical/scientific context is fine if highly relevant (e.g. a captured city that matters for controlling an oil pipeline, or similar context).
 
-**Organise by TOPIC, not by source.** This is the most important instruction about structure. Each section is a list of topics; a topic gets a short concrete heading and then bullets, and the bullets under one heading MIX feed articles, X posts and Reddit posts freely wherever they are about the same thing. An article and the thread reacting to it belong next to each other. Never create a section or subsection that exists only because of where an item came from.
+**Organise by TOPIC, not by source.** Each section is a list of topics; a topic gets a short concrete heading and then bullets, and the bullets under one heading MIX feed articles, X posts and Reddit posts freely wherever they are about the same thing. An article and the thread reacting to it belong next to each other. 
 
 **Source weighting.** The subscribed feeds and newsletters are the primary source here -- they are edited, they are hand-picked by the reader, and they carry the reporting. Aim for roughly **70% of the digest's substance to come from feeds/newsletters and 30% from X and Reddit combined**, and treat the social material as reaction, dissent and early signal around the reported items rather than as the record itself. Attribute every item inline -- the **publication or newsletter name** for feed items, **@handle** for X, **r/subreddit** for Reddit -- so the reader can see the mix inside each topic. If a topic is genuinely single-source, leave it single-source rather than padding it.
 
@@ -47,14 +47,14 @@ Do NOT add facts that are not in the provided material. If something important i
 
 **Procedure:**
 - First, discard anything repetitive, widely known, or low impact (>80% discard rate target). Routine coverage of a running story is noise unless something actually changed.
-- Cluster what survives into **3 to 7 topics** for the main section, ordered most important first, each with a short concrete heading (e.g. "Dutch export controls on ASML spares", not "Trade news").
+- Cluster what survives into a list of topics for the main section, ordered most important first, each with a short concrete heading (e.g. "Dutch export controls on ASML spares", not "Trade news").
 - Within a topic, order bullets by importance and keep each to 1-3 sentences.
 - Prefer the specific over the sweeping: a number, a name, a date, a quoted phrase.
-- Some items arrive in a language other than English (German-language Austrian and German press especially). Read them as normal material and write the digest in **English**; give a translated title in quotes where you name the piece.
+- Some items arrive in a language other than English. Read them as normal material and write the digest in **English**; give a translated title in quotes where you name the piece.
 
 **LINK RULES — STRICT, non-negotiable.**
 - Only ever link to **off-platform** destinations: articles, papers, arxiv, blog posts, repos, docs, filings, product pages.
-- **NEVER** emit a link to x.com, twitter.com, t.co, reddit.com, redd.it, or any other social-platform permalink. Those are blocked on the reader's devices, so such a link is both dead and a distraction.
+- **NEVER** emit a link to x.com, twitter.com, t.co, reddit.com, redd.it, or any other social-platform permalink. Those may be blocked on the readers' devices, so such a link is both dead and a distraction.
 - Feed items come with a `link:` field and X items with an `external links:` field, both already filtered for you -- prefer those verbatim.
 - Put links **inline**, anchored on descriptive text inside the bullet that discusses them. Do not repeat a link you have already used inline.
 - If an item has no off-platform link, describe it and link nothing. Never invent a URL.
@@ -79,11 +79,6 @@ Do not use markdown syntax: no **, no leading -, no #. Inside a <li> write prose
 <h3>{second_section}</h3>
 <ul>
 <li>[{second_section_hint}]</li>
-</ul>
-
-<h3>What To Watch</h3>
-<ul>
-<li>[One or two concrete near-term things this material says to watch: a scheduled decision, a number due out, a threshold something is approaching. Only from the material.]</li>
 </ul>
 
 <h3>Further Reading</h3>
