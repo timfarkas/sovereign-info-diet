@@ -6,13 +6,13 @@ You don't want Zuck to use you as an attention extraction mine?
 Then LIBERATE YOURSELF from their dystopian yoke and build your own data ingestion pipeline and recommender algorithm.
 
 This project consists of two things that allow this:
-- A content digest system that scrapes Reddit and X posts (easily extensible to other platforms) and summarizes them, sending them to you as e-mails.
+- A content digest system that scrapes Reddit posts, X posts and the RSS feeds and newsletters you subscribe to, and summarizes them per topic, sending them to you as e-mails. Four topics ship: AI/tech nightly, plus geopolitics/markets/supply chains, pandemic preparedness and bio-risk, and Europe/the EU/European liberal values, each every three days.
 - A Readwise recommender system that shows you posts similar to ones you read or saved for later or rated well.
 
 
 ## Full Flow
 
-1. `X and Reddit posts -> digest system -> content digest e-mail`
+1. `X posts, Reddit posts and subscribed RSS feeds -> digest system -> one content digest e-mail per topic`
 
 2. `Digest e-mails & other newsletters -> auto-forwarded to Readwise feed e-mail (via mail server) -> Readwise Feed`
 
@@ -53,8 +53,18 @@ time on a 3.7 GB box.
 `HOME_DIR` (absolute path to your home directory -- used to build absolute
 paths for cron, since cron does not run with your shell's `$HOME`),
 `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
-`EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
-`HTML_SERVE_DIR` is optional, for both -- see "status page" below.
+`EMAIL_FROM`, `EMAIL_TO`, `X_SEED_ACCOUNTS` (digest), and `READWISE_API_KEY`
+(recommender). `HTML_SERVE_DIR` is optional, for both -- see "status page"
+below. `REDDIT_USER_AGENT` is optional, defaulting to a generic string with
+no username in it.
+
+Real identities -- email addresses, X handles -- live only in `.env`, never
+in `config.py`: this is a public repo, and anything in `config.py` is
+committed for the world to read. `EMAIL_TO_EXTRA` (extra digest recipients)
+and `X_SEED_ACCOUNTS` (the account universe is whoever these follow, so it
+names third parties too, not just the reader) are both comma-separated lists
+that work this way -- see "the pipeline" below for how `--test`/`--dry-run`
+narrow who a run mails.
 
 ### digest/
 
@@ -72,13 +82,79 @@ uv pip install -r requirements.txt
 | leg | what it does |
 |---|---|
 | `x_scraper.py` | pulls X timelines via twitterapi.io for the union of who `X_SEED_ACCOUNTS` follow |
-| `reddit_scraper.py` | pulls `SUBREDDITS` via praw |
-| `llm_summarizer.py` | fetches linked pages (`link_fetcher.py`), then summarizes all three sources |
-| `send_notification.py` | mails the latest summary |
+| `reddit_scraper.py` | pulls the union of every topic's subreddits via praw |
+| `rss_scraper.py` | pulls subscribed feeds, via Readwise Reader and by fetching feed URLs directly |
+| `digest_run.py` | for each topic that is due: fetches linked pages (`link_fetcher.py`), summarizes, mails |
 
-Either source leg may fail without killing the run; the summarizer refuses to mail
-an empty digest and stamps a maintenance banner on the mail when a leg is
-unhealthy, so breakage shows up in the inbox rather than in silence.
+Each source leg is scraped **once** and sliced per topic, rather than scraped per
+topic -- X credits are per-tweet, so four scrapes would pay four times for
+largely the same corpus. Any source leg may fail without killing the run, each
+topic is isolated in its own try/except, `digest_run.py` refuses to mail an empty
+digest, and it stamps a maintenance banner on the mail when a leg is unhealthy --
+so breakage shows up in the inbox rather than in silence.
+
+#### topics
+
+A digest is a row in `digest/topics.py`, not a code path. Everything downstream
+takes a `Topic` and does not know which one it got, which is what makes adding a
+fifth topic a config change:
+
+| field | what it decides |
+|---|---|
+| `every_n_days` | cadence. Compared against the last **success**, so a failed run retries tomorrow instead of being benched for another cycle |
+| `window_days` / `lookback_hours` | how far back the prompt claims to look, and how old a dump on disk may be |
+| `subreddits` / `posts_per_subreddit` | its slice of the reddit corpus |
+| `x_all` / `keywords` | the whole X corpus (the AI topic) or the tweets matching its keywords |
+| `feeds` / `feed_urls` | publications routed to it wholesale, and feeds to fetch directly |
+| `cost_ceiling_usd` | warns past this; measured per run |
+
+Routing is a word-bounded keyword regex plus publication matching -- deliberately
+the low-bit version. Over ~250 items a night it is auditable, free and instant,
+and since the prompt asks the model to discard >80% of what it is handed, a false
+positive costs a few hundred tokens where a false negative costs a missed item.
+So the keyword lists lean inclusive.
+
+`feed_urls` says which feeds to *fetch*, not which items land in that topic: a
+feed added there still needs its publication in `feeds`, or a keyword hit, to
+reach anything. That is what lets `who.int` be fetched for the pandemic topic but
+routed by keyword, so WHO news about staffing does not land in a bio-risk digest.
+
+```bash
+python digest_run.py --list                  # what is due tonight, and why
+python digest_run.py --only geopolitics --test  # one topic, mailed to EMAIL_TO only
+python digest_run.py --no-mail --force       # all of them, ignoring cadence, no mail
+python llm_summarizer.py                     # still means "produce the AI digest"
+```
+
+Three mail tiers, checked in this order: `--dry-run`/`--no-mail` sends nothing;
+`--test` sends to `EMAIL_TO` only; otherwise (the nightly cron path) it sends
+to `EMAIL_TO` plus every address in `EMAIL_TO_EXTRA` (.env).
+
+#### subscribed feeds
+
+Two independent paths, not a primary and a fallback:
+
+- **Readwise Reader** (`RSS_READWISE_ENABLED`) -- what he actually subscribes to,
+  already parsed, via `/api/v3/list/` with `location=feed`. `RSS_CATEGORIES`
+  defaults to `("rss", "email")`, i.e. newsletters count as subscribed feeds.
+- **Direct fetch** (`RSS_DIRECT_ENABLED`) -- `feedparser` over every topic's
+  `feed_urls`, so the digest still works on a box with no Readwise account.
+
+Results are merged and deduplicated on the **cleaned** URL (query and fragment
+stripped, which is where the campaign tracking lives) plus the title; the
+Readwise copy wins a tie. Body text comes from `link_fetcher.py`, because
+Readwise's list endpoint returns an empty `content` field -- measured 0/126, with
+`summary` populated on 125/126.
+
+His own digests are auto-forwarded into that feed (step 2 of the Full Flow), so
+the pipeline would otherwise summarize itself, compounding each pass. They are
+excluded at **ingest** (`RSS_EXCLUDE_AUTHORS`, `RSS_EXCLUDE_TITLE_PREFIXES`), so
+no later routing change can surface one.
+
+A feed that 404s costs its own items and nothing else. Note that HTTP 200 is not
+evidence a feed is alive: `csis.org/rss.xml` returns 200 with entries from 2016,
+and `cidrap.umn.edu/rss.xml` from 2022. Check the newest entry's date, not the
+status code, before adding one.
 
 #### knobs
 
@@ -86,8 +162,18 @@ All in `digest/config.py`. The ones that move cost or shape:
 
 - `SUMMARY_MODEL` / `MODEL_PRICING` / `SUMMARY_COST_CEILING_USD` — every run prints
   its measured cost and warns past the ceiling.
-- `TIME_HORIZON_DAYS` — digest window. Widening it is safe: the seen-ids store
-  stops already-summarized posts from reappearing.
+- `TIME_HORIZON_DAYS` — the AI digest's window. Widening it is safe: the seen-ids
+  store stops already-summarized posts from reappearing. Other topics carry their
+  own `window_days`.
+- `POSTS_PER_SUBREDDIT` — a fixed quota, not `POSTS_TO_ANALYZE // len(SUBREDDITS)`:
+  that expression was computed over the AI topic's five subreddits, and the union
+  across all topics is 19, so keeping it would have silently cut the AI digest
+  from 12 posts per subreddit to 3.
+- `RSS_WINDOW_DAYS`, `RSS_MAX_ITEMS_PER_FEED`, `RSS_SUMMARY_MAX_CHARS` — the feed
+  leg's size levers. A topic's own `max_feed_items` caps what reaches its prompt,
+  and that cap is spent **round-robin across publications**: a daily paper
+  publishes ~35 items per window and a weekly law blog ~4, so newest-first
+  selection would hand the whole budget to the loudest feed.
 - `X_MAX_TWEETS_IN_PROMPT`, `LINK_FETCH_MAX_PAGES`, `LINK_FETCH_MAX_CHARS` — the
   three levers on prompt size, i.e. on cost.
 - `X_MAX_QUERY_CHARS` — leave it under ~450. X search silently returns zero
@@ -194,10 +280,16 @@ HTML_SERVE_DIR=/home/html          # -> <that dir>/ai-digest/, <that dir>/recomm
 
 What each page shows:
 
-- **`ai-digest/`** -- posts per source (log scale, and every bar opens to the
-  posts that account or subreddit actually contributed), link-enrichment hit
-  rate, and what the night cost across *both* vendors: OpenAI tokens and
-  twitterapi.io credits
+- **`ai-digest/`**, **`digest-geopolitics/`**, **`digest-pandemic/`**,
+  **`digest-europe/`** -- one page per topic: posts per source (log scale, and
+  every bar opens to the posts that account or subreddit actually contributed),
+  link-enrichment hit rate, feed ingest health (both paths, what was dropped at
+  ingest and why, volume per publication, any feed that failed), and what the run
+  cost across *both* vendors: OpenAI tokens and twitterapi.io credits. Topic
+  pages are discovered from the history directory, so a new topic gets a page the
+  first time it records a run; the AI page exists unconditionally, since on a box
+  with no history "no run recorded yet" is that page's job and a missing page
+  looks like a webserver fault
 - **`recommender/`** -- held-out AUC run by run against its baselines, tonight's
   ten picks each with a "why this score" that splits the logit into
   topic/length/format and lists the labelled documents it resembles, the
@@ -235,11 +327,16 @@ chart is backed by a `<details>` table.
 ### tests
 
 ```bash
-cd digest && .venv/bin/python -m pytest test_x_ingestion.py --timeout 5
+cd digest && .venv/bin/python -m pytest test_x_ingestion.py test_topics.py --timeout 5
 cd recommender && .venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
 ```
 
 Covers the failure modes: API outage, resume-from-cache, dedupe, the query-length
-cliff, link hygiene, and the cost ceiling. `test_stats.py` needs the recommender
+cliff, link hygiene, and the cost ceiling. `test_topics.py` additionally pins
+every value the AI digest previously hardcoded -- including that it draws no feed
+items at all -- and asserts the cross-cutting prompt rules (no social links, the
+untrusted-data fence, fragment-only HTML) as properties of each topic's prompt
+rather than by comparing wording, since the AI prompt is deliberately its own
+text. `test_stats.py` needs the recommender
 venv; the digest-side status tests live in `digest/test_x_ingestion.py` because
 `digest_stats` sits in `llm_summarizer.py`, which imports `openai`.

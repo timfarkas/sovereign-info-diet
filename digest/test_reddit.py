@@ -9,7 +9,7 @@ load_dotenv()
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_SECRET"),
-    user_agent="tim-filter/0.1 by timfarkas"
+    user_agent=os.getenv("REDDIT_USER_AGENT", "tim-filter/0.1")
 )
 
 reddit.read_only = True
