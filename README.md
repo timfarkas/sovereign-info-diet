@@ -53,8 +53,18 @@ time on a 3.7 GB box.
 `HOME_DIR` (absolute path to your home directory -- used to build absolute
 paths for cron, since cron does not run with your shell's `$HOME`),
 `REDDIT_CLIENT_ID`, `REDDIT_SECRET`, `TWITTER_IO_API_KEY`, `OPENAI_API_KEY`,
-`EMAIL_FROM`, `EMAIL_TO` (digest), and `READWISE_API_KEY` (recommender).
-`HTML_SERVE_DIR` is optional, for both -- see "status page" below.
+`EMAIL_FROM`, `EMAIL_TO`, `X_SEED_ACCOUNTS` (digest), and `READWISE_API_KEY`
+(recommender). `HTML_SERVE_DIR` is optional, for both -- see "status page"
+below. `REDDIT_USER_AGENT` is optional, defaulting to a generic string with
+no username in it.
+
+Real identities -- email addresses, X handles -- live only in `.env`, never
+in `config.py`: this is a public repo, and anything in `config.py` is
+committed for the world to read. `EMAIL_TO_EXTRA` (extra digest recipients)
+and `X_SEED_ACCOUNTS` (the account universe is whoever these follow, so it
+names third parties too, not just the reader) are both comma-separated lists
+that work this way -- see "the pipeline" below for how `--test`/`--dry-run`
+narrow who a run mails.
 
 ### digest/
 
@@ -111,10 +121,14 @@ routed by keyword, so WHO news about staffing does not land in a bio-risk digest
 
 ```bash
 python digest_run.py --list                  # what is due tonight, and why
-python digest_run.py --only geopolitics      # one topic
+python digest_run.py --only geopolitics --test  # one topic, mailed to EMAIL_TO only
 python digest_run.py --no-mail --force       # all of them, ignoring cadence, no mail
 python llm_summarizer.py                     # still means "produce the AI digest"
 ```
+
+Three mail tiers, checked in this order: `--dry-run`/`--no-mail` sends nothing;
+`--test` sends to `EMAIL_TO` only; otherwise (the nightly cron path) it sends
+to `EMAIL_TO` plus every address in `EMAIL_TO_EXTRA` (.env).
 
 #### subscribed feeds
 

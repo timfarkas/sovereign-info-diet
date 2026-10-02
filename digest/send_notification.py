@@ -3,26 +3,46 @@
 import os
 from pathlib import Path
 from datetime import datetime
+from typing import List, Union
 from dotenv import load_dotenv
+
+from config import csv_env
 
 load_dotenv()
 
-def send_email(subject: str, body: str, to_email: str = None):
+def recipients_for(full: bool) -> List[str]:
+    """Who a run mails. Full runs (the nightly cron path) mail EMAIL_TO plus
+    every address in EMAIL_TO_EXTRA (.env, comma-separated) -- both env vars,
+    not code, since this is a public repo and an address in config.py would
+    be committed for anyone to read. Anything else -- a --test run, or the
+    manual "resend tonight's digest" path -- mails EMAIL_TO alone, so trying
+    things out never spams the full list. A --dry-run never calls this at
+    all: digest_run.py skips mailing before recipients matter.
+    """
+    primary = os.getenv("EMAIL_TO")
+    if not primary:
+        raise ValueError("Missing email config. Set EMAIL_TO in .env")
+    if not full:
+        return [primary]
+    return [primary, *csv_env("EMAIL_TO_EXTRA")]
+
+def send_email(subject: str, body: str, to_email: Union[str, List[str], None] = None):
     """Send email via mail command (for Linux VPS with sendmail/postfix)"""
-    
+
     import subprocess
-    
-    # get email from env
+
+    # get recipient(s): a single address, a list, or fall back to EMAIL_TO
     to_email = to_email or os.getenv("EMAIL_TO")
+    recipients = [to_email] if isinstance(to_email, str) else list(to_email or [])
     from_email = os.getenv("EMAIL_FROM", "AI Digest <noreply@kyro.local>")
-    
+
     # debug print what was parsed
     print(f"📧 Debug - FROM: {repr(from_email)}")
-    print(f"📧 Debug - TO: {repr(to_email)}")
-    
-    if not to_email:
+    print(f"📧 Debug - TO: {recipients!r}")
+
+    if not recipients:
         raise ValueError("Missing email config. Set EMAIL_TO in .env")
-    
+
     # body is already HTML (produced by the summarizer's prompt)
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -46,22 +66,22 @@ def send_email(subject: str, body: str, to_email: str = None):
 </html>"""
     
     # send using mail command with html content type
-    print(f"📧 Debug - Sending HTML email to {to_email}")
+    print(f"📧 Debug - Sending HTML email to {', '.join(recipients)}")
     try:
         process = subprocess.Popen(
-            ['mail', '-s', subject, 
+            ['mail', '-s', subject,
              '-a', f'From: {from_email}',
              '-a', 'Content-Type: text/html; charset=utf-8',
-             to_email],
+             *recipients],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
         stdout, stderr = process.communicate(input=html_content)
-        
+
         if process.returncode == 0:
-            print(f"✅ Email sent to {to_email}")
+            print(f"✅ Email sent to {', '.join(recipients)}")
             return True
         else:
             print(f"❌ Failed to send email: {stderr}")
