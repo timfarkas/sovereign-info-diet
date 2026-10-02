@@ -41,11 +41,6 @@ def has_no_text_value(url: str) -> bool:
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 
-# Above any plausible like+retweet count, so subscribed-feed articles take the
-# fetch budget first. Not infinity: still a number, still comparable, still
-# possible to see in a debugger that this is what happened.
-FEED_LINK_WEIGHT = 10_000_000
-
 # Content we have no text extractor for. Skipped with a reason rather than
 # silently mangled into byte soup.
 BINARY_HINTS = (".pdf", ".zip", ".mp4", ".mp3", ".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -100,17 +95,11 @@ class LinkFetcher:
     # --- link selection -------------------------------------------------
     @staticmethod
     def collect_links(tweets: List[Dict], posts: List[Dict],
-                      limit: int = 20, feed_items: List[Dict] = None) -> List[str]:
+                      limit: int = 20) -> List[str]:
         """Unique fetchable links, ranked by how much attention the post got.
 
         Engagement is a cheap proxy for "worth reading the source of", and it
         keeps the budget spent on the links the digest is most likely to cite.
-
-        Feed items are ranked ABOVE every social link rather than scored against
-        them: he chose those subscriptions himself, the topic prompts ask for
-        ~70% of the substance to come from them, and they arrive with no
-        engagement number to compare anyway. Within the feed block, insertion
-        order (newest first) survives -- sorted() is stable on equal weights.
         """
         scored: Dict[str, int] = {}
         seen_lower: Dict[str, str] = {}   # collapse case-variant duplicates
@@ -119,10 +108,6 @@ class LinkFetcher:
             canon = seen_lower.setdefault(url.lower(), url)
             scored[canon] = max(scored.get(canon, 0), weight)
 
-        for it in feed_items or []:
-            u = it.get("url")
-            if u and not is_blocked_link(u) and not has_no_text_value(u):
-                note(u, FEED_LINK_WEIGHT)
         for t in tweets or []:
             weight = (t.get("likes") or 0) + (t.get("retweets") or 0)
             for u in t.get("external_links") or []:
@@ -188,10 +173,8 @@ class LinkFetcher:
         return rec
 
     def enrich(self, tweets: List[Dict], posts: List[Dict], limit: int = 20,
-               max_chars: int = 2500, feed_items: List[Dict] = None
-               ) -> List[Dict[str, Any]]:
-        urls = self.collect_links(tweets, posts, limit=limit,
-                                  feed_items=feed_items)
+               max_chars: int = 2500) -> List[Dict[str, Any]]:
+        urls = self.collect_links(tweets, posts, limit=limit)
         if not urls:
             print("  [links] no fetchable external links in this corpus")
             return []

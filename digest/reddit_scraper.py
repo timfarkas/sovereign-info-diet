@@ -158,10 +158,6 @@ class RedditScraper:
                 'title': submission.title,
                 'score': submission.score,
                 'subreddit': submission.subreddit.display_name,
-                # Topics have different windows (AI 2 days, the rest 3), and one
-                # scrape serves all of them -- so each post has to carry its own
-                # age. Formatted out of the prompt, never shown to the model.
-                'created_utc': submission.created_utc,
                 'selftext': submission.selftext if submission.selftext else None,
                 # external destination of a link post -- without this a link post
                 # contributes only its title, and the article it points at is lost
@@ -261,38 +257,24 @@ class RedditScraper:
 
 
 if __name__ == "__main__":
-    from config import POSTS_PER_SUBREDDIT, SORT_BY
-
-    import topics
-
+    from config import POSTS_TO_ANALYZE, SUBREDDITS, SORT_BY, TIME_HORIZON_DAYS
+    
     scraper = RedditScraper()
-
-    # One scrape serves every topic. A subreddit's quota and window are the
-    # WIDEST any topic asks for, and each topic narrows the result to its own
-    # window afterwards (Topic.select_posts) -- so a 3-day topic joining the run
-    # cannot shrink the AI digest's 2-day, 12-post-per-subreddit share, which is
-    # exactly the regression the old `POSTS_TO_ANALYZE // len(SUBREDDITS)`
-    # formula would have caused at 19 subreddits.
-    wanted = {}
-    for t in topics.all_topics():
-        for sub in t.subreddits:
-            quota, window = wanted.get(sub, (0, 0))
-            wanted[sub] = (max(quota, t.posts_per_subreddit or POSTS_PER_SUBREDDIT),
-                           max(window, t.window_days))
-
+    
     all_posts = []
     failed_subreddits = []
-    posts_per_sub = POSTS_PER_SUBREDDIT      # reported in the health file
+    posts_per_sub = POSTS_TO_ANALYZE // len(SUBREDDITS)  # divide quota among subreddits
 
-    for subreddit, (quota, window) in wanted.items():
-        print(f"\n📊 Scraping r/{subreddit} (up to {quota}, {window}d)...")
+    # scrape each subreddit
+    for subreddit in SUBREDDITS:
+        print(f"\n📊 Scraping r/{subreddit}...")
         try:
             posts = scraper.scrape_subreddit(
                 subreddit,
-                limit=quota,
+                limit=posts_per_sub,
                 sort=SORT_BY,
                 condensed=True,
-                time_horizon_days=window
+                time_horizon_days=TIME_HORIZON_DAYS
             )
         except Exception as e:
             # one bad subreddit shouldn't cost the posts already scraped from the others
@@ -305,7 +287,7 @@ if __name__ == "__main__":
     output_file = scraper.save_to_json(all_posts)
     
     # print summary
-    print(f"\nTotal scraped: {len(all_posts)} posts across {len(wanted)} subreddits")
+    print(f"\nTotal scraped: {len(all_posts)} posts across {len(SUBREDDITS)} subreddits")
     total_comments = sum(len(p['comments']) for p in all_posts)
     total_images = sum(len(p.get('images', [])) for p in all_posts)
     total_replies = sum(sum(len(c.get('replies', [])) for c in p['comments']) for p in all_posts)
@@ -327,9 +309,7 @@ if __name__ == "__main__":
         "status": "down" if not all_posts else
                   "degraded" if failed_subreddits else "healthy",
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "configured": list(wanted),
-        "by_topic": {t.key: len(t.select_posts(all_posts))
-                     for t in topics.all_topics()},
+        "configured": list(SUBREDDITS),
         "failed": failed_subreddits,
         "posts": len(all_posts),
         "comments": total_comments,
@@ -337,7 +317,7 @@ if __name__ == "__main__":
         "images": total_images,
         "by_subreddit": dict(sub_counts),
         "sort_by": SORT_BY,
-        "window_days": max((w for _, w in wanted.values()), default=0),
+        "window_days": TIME_HORIZON_DAYS,
         "quota_per_subreddit": posts_per_sub,
     }, indent=2))
 

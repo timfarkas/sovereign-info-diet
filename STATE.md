@@ -1,7 +1,7 @@
 # State of this box
 
 What is running, what it is doing, and what is known to be wrong with it.
-Last updated 2026-09-30.
+Last updated 2026-09-29.
 
 ## Two independent jobs
 
@@ -12,7 +12,7 @@ Last updated 2026-09-30.
 | cron | 01:00 UTC | 02:00 UTC |
 | log | `~/logs/ai-digest.log` | `~/logs/shortlist.log` |
 | venv | `digest/.venv` | `recommender/.venv-rec` |
-| what it does | X + Reddit + subscribed feeds → LLM → one digest email per topic | ranks Readwise Reader, tags `shortlist` |
+| what it does | X + Reddit → LLM → digest email | ranks Readwise Reader, tags `shortlist` |
 | fails how | silently, into its log | silently, into its log |
 
 They are deliberately separate: different dependencies (onnxruntime and
@@ -28,10 +28,7 @@ mesh only:
 
 | | page |
 |---|---|
-| digest — AI/tech | <http://192.168.2.6:8080/ai-digest/> |
-| digest — geopolitics | <http://192.168.2.6:8080/digest-geopolitics/> |
-| digest — pandemic | <http://192.168.2.6:8080/digest-pandemic/> |
-| digest — europe | <http://192.168.2.6:8080/digest-europe/> |
+| digest | <http://192.168.2.6:8080/ai-digest/> |
 | recommender | <http://192.168.2.6:8080/recommender/> |
 
 Both carry a status pill and a "flagged this run" box, so a dead leg is one
@@ -46,49 +43,6 @@ if `HTML_SERVE_DIR` is unset). The rendering call is wrapped in a try/except in
 both jobs on purpose -- a rendering bug must never be the reason a digest does
 not go out, or the reason a cycle that already wrote tags to Readwise reports
 failure. It prints the traceback rather than swallowing it.
-
-## The digest, as built
-
-One nightly run, four topics, defined as rows in `digest/topics.py`. The AI
-digest runs every night; geopolitics, pandemic preparedness and Europe run every
-three days each, staggered by nothing more than when they last succeeded. Each
-source is scraped once and sliced per topic.
-
-| topic | cadence | window | subreddits | direct feeds | ceiling | measured |
-|---|---|---|---|---|---|---|
-| AI/tech | nightly | 2d | 5 | — | $0.25 | $0.15–0.24 |
-| geopolitics, markets, supply chains | 3d | 3d | 5 | 6 | $0.15 | $0.089 |
-| pandemic preparedness & bio-risk | 3d | 3d | 5 | 5 | $0.15 | $0.034 |
-| Europe, the EU & liberal values | 3d | 3d | 4 | 6 | $0.15 | $0.057 |
-
-Measured on the live corpus 2026-09-30, `gpt-6-sol` flex tier. The three new
-topics add roughly $0.06/day amortised on top of the AI digest's ~$0.20, and the
-feed leg itself is free (Readwise plus direct fetches, no per-item billing). X
-credits do not change at all: the topics read the dumps already on disk rather
-than widening the X query.
-
-Known and deliberate:
-
-- **The AI digest is a topic row, not a special case, but its values are pinned.**
-  `digest/test_topics.py` asserts each of them, and the prompt it builds is
-  byte-identical to the pre-multi-topic code's on the same corpus (verified by
-  diffing a 420 KB prompt against a pristine checkout). If you edit the AI row,
-  those tests are the thing that tells you.
-- **The AI topic draws no feed items.** Its contract is the pre-existing one, X +
-  Reddit. An empty keyword set means "take everything" for tweets, so the feed
-  selector needs an explicit guard -- without it the AI digest filled up with
-  Austrian domestic politics.
-- **The `feed_urls` lists are a starting point, not his subscriptions.** The
-  primary path is Readwise, i.e. whatever he actually subscribes to; these are the
-  independent fallback and are deliberately short and high-signal. Two obvious
-  additions (`thediplomat.com`, `freightwaves.com`) are live but publish ~45 items
-  per window each, which would pin a topic against its cap permanently and turn
-  selection into "whatever was newest".
-- **`bruegel.org`, `ecfr.eu`, `brookings.edu` and `outbreaknewstoday.com` 403/302
-  a scripted fetch.** Dropped rather than worked around: a feed that needs a
-  browser-shaped request is a feed whose owner does not want one.
-- **WHO's Disease Outbreak News feed is 404 at every documented URL.** WHO reaches
-  the pandemic topic by keyword only.
 
 ## The box
 

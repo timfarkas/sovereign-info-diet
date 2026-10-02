@@ -76,14 +76,9 @@ def send_email(subject: str, body: str, to_email: str = None):
 def send_summary_email():
     """Send the latest summary via email"""
     
-    # Latest AI digest specifically. The date-prefixed glob matters: the topic
-    # digests write summary_<key>_<date>.html into the same directory, and a
-    # bare summary_*.html would pick whichever topic ran most recently and mail
-    # it under the AI digest's subject line. digest_run.py mails each topic the
-    # file it just wrote, so this function is now only the manual "resend
-    # tonight's AI digest" path.
+    # find latest summary
     summaries_dir = Path("extracts/summaries")
-    summary_files = list(summaries_dir.glob("summary_[0-9]*.html"))
+    summary_files = list(summaries_dir.glob("summary_*.html"))
     
     if not summary_files:
         print("No summaries found")
