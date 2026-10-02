@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import config
+import prompts
 import rss_scraper
 import topics
 
@@ -53,7 +54,28 @@ class TestAIDigestUnchanged:
 
     def test_prompt_is_the_production_template_itself(self):
         # not a copy, not a reformat: the same object out of config
-        assert topics.topic("ai").prompt is config.SUMMARY_PROMPT_TEMPLATE
+        assert topics.topic("ai").prompt is prompts.AI
+
+    def test_prompt_carries_the_notes_and_longrunning_contract(self):
+        """The AI digest keeps scratch notes and a long-running board like the
+        other three: the trailer is asked for, and SOURCE E/F feed it back."""
+        p = topics.topic("ai").prompt
+        for marker in ("<!-- STATE-NOTES-START -->", "<!-- LONG-RUNNING-START -->",
+                       "SOURCE E", "SOURCE F"):
+            assert marker in p
+        out = p.format(window_days=2, pages_content="", tweets_content="",
+                       posts_content="", feed_content="",
+                       prior_notes="PRIOR_NOTE_MARKER", longrunning="BOARD_MARKER")
+        assert "PRIOR_NOTE_MARKER" in out and "BOARD_MARKER" in out
+
+    def test_trailer_round_trips_through_extract(self):
+        import state_notes
+        raw = ("<h3>Major Developments</h3><ul><li>x</li></ul>"
+               "<!-- STATE-NOTES-START -->covered x<!-- STATE-NOTES-END -->"
+               "<!-- LONG-RUNNING-START -->- board item<!-- LONG-RUNNING-END -->")
+        html, notes, board = state_notes.extract(raw)
+        assert "STATE-NOTES" not in html and "LONG-RUNNING" not in html
+        assert notes == "covered x" and "board item" in board
 
     def test_window_and_lookback(self):
         ai = topics.topic("ai")

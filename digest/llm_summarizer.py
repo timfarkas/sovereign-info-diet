@@ -328,15 +328,11 @@ class LLMSummarizer:
 
         `topic=None` means the AI digest, which is how every pre-multi-topic
         caller (and every existing test) still gets exactly the prompt it got
-        before: config.SUMMARY_PROMPT_TEMPLATE, the AI window, no feed items.
+        before: prompts.AI, the AI window, no feed items.
 
-        The two template families use different slot names -- the AI template
-        predates the others and says {TIME_HORIZON_DAYS}, the shared skeleton in
-        prompts.py says {window_days} and also wants {feed_content}. Both name
-        sets are passed to .format() every time, and str.format ignores keys a
-        template does not reference. So one build() serves all four topics with
-        no branching, and adding a slot to the skeleton cannot break the AI
-        prompt.
+        Every template is handed the full slot set; str.format ignores keys a
+        template does not reference (the AI one has no {feed_content}), so one
+        build() serves all four topics with no branching.
         """
         import topics as topics_mod
         topic = topic or topics_mod.topic("ai")
@@ -373,7 +369,6 @@ class LLMSummarizer:
 
         def build(tws):
             return topic.prompt.format(
-                TIME_HORIZON_DAYS=topic.window_days,
                 window_days=topic.window_days,
                 posts_content=posts_content or "(no reddit posts in this window)",
                 tweets_content=format_tweets(tws) or "(no X posts in this window)",

@@ -207,17 +207,18 @@ def _compile(keywords) -> re.Pattern:
 # -- AI: the original digest, reproduced exactly -------------------------------
 # Every value here is what the pipeline hardcoded before this module existed:
 # TIME_HORIZON_DAYS=2, MAX_AGE_HOURS=20, SUBREDDITS, POSTS_TO_ANALYZE//5 == 12,
-# SUMMARY_COST_CEILING_USD, LINK_FETCH_MAX_PAGES, the whole X corpus, and
-# SUMMARY_PROMPT_TEMPLATE byte-for-byte. Changing one of them is a change to
+# SUMMARY_COST_CEILING_USD, LINK_FETCH_MAX_PAGES and the whole X corpus. Its
+# prompt now lives in prompts.py with the others; it is the same text as before
+# plus the scratch-notes and long-running-board trailer the other topics have. Changing one of them is a change to
 # the digest Tim reads every morning, so do it on purpose.
 def _ai_topic() -> Topic:
     from config import (LINK_FETCH_MAX_PAGES, POSTS_TO_ANALYZE, SUBREDDITS,
-                        SUMMARY_COST_CEILING_USD, SUMMARY_PROMPT_TEMPLATE,
-                        TIME_HORIZON_DAYS)
+                        SUMMARY_COST_CEILING_USD, TIME_HORIZON_DAYS)
+    from prompts import AI
     return Topic(
         key="ai",
         name="AI",
-        prompt=SUMMARY_PROMPT_TEMPLATE,
+        prompt=AI,
         system=("You are a sharp, insightful AI/tech news analyst with a good "
                 "sense of humor."),
         priorities_blurb="frontier capability, alignment and x-risk, sentiment, "

@@ -25,12 +25,10 @@ a model to fabricate fields it does not have an honest answer for; prose it
 writes in its own words is easier to read, easier to trust, and easier for a
 human to audit on the status page.
 
-Only the three shared-skeleton topics use this (their template is the only
-one with the {{prior_notes}}/{{longrunning}} slots and the trailer
-instructions that produce entries to save -- see prompts.py). The AI
-digest's own template never references any of it, so `load()`/
-`load_longrunning()` for "ai" return their empty-state defaults and neither
-save function is ever called for it from digest_run.py.
+All four topics use this: every template carries the {{prior_notes}}/
+{{longrunning}} slots and the trailer instructions that produce entries to
+save (shared once in prompts.py). A topic with no history yet gets the
+empty-state defaults from `load()`/`load_longrunning()`.
 """
 import re
 from datetime import datetime
@@ -112,8 +110,7 @@ def extract(html: str) -> tuple:
     notes_text is "" when the template had no STATE-NOTES trailer. longrunning
     is None when there was no LONG-RUNNING trailer -- distinct from "", which
     would wipe the saved board -- so a run that forgets the trailer leaves the
-    board untouched instead of silently erasing it. The AI digest, which asks
-    for neither, round-trips untouched with notes_text="" and longrunning=None.
+    board untouched instead of silently erasing it.
     """
     clean = html
     notes = ""
