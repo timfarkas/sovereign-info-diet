@@ -14,6 +14,8 @@ import config
 import recommender_model
 import recommender_refine
 import shortlist_stats
+from html_status import stats_page, stats_store
+from html_status import config as html_status_config
 from recommender_store import Store
 
 NOW = datetime(2026, 9, 25, tzinfo=timezone.utc)
@@ -151,3 +153,73 @@ def test_the_spotcheck_shows_exactly_what_was_embedded(store):
     assert len(out["random_feed"]) == 10
     first = out["shortlist"][0]
     assert first["embedded_text"] == recommender_embed.document_text(store.document("f0"))
+
+
+@pytest.fixture
+def paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(html_status_config, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(html_status_config, "HTML_SERVE_DIR", str(tmp_path / "html"))
+    return tmp_path
+
+
+def test_the_ab_table_ignores_the_control_history_before_interleaving(store):
+    stock(store, [doc("old"), doc("a"), doc("c")])
+    store.log_event("old", "added", "2026-09-01", slot="feed")
+    assert shortlist_stats.interleaving_since(store) is None
+    store.log_event("a", "added", "2026-10-09", slot="feed")
+    store.log_event("c", "added", "2026-10-09", slot="feed-cand")
+    since = shortlist_stats.interleaving_since(store)
+    arms = shortlist_stats.live_arms(store, since=since)
+    assert since == "2026-10-09"
+    assert arms["feed"]["shown"] == 1 and arms["feed-cand"]["shown"] == 1
+
+
+def test_subpages_render_with_no_runs_and_with_old_rows(paths):
+    assert "no interleaved run" in stats_page.render_refinement([])
+    assert "no run recorded" in stats_page.render_spotcheck([])
+    stats_store.record("shortlist", {"run_at": NOW.isoformat()})
+    rows = stats_store.load("shortlist")
+    assert "no interleaved run" in stats_page.render_refinement(rows)
+    assert "no run recorded" in stats_page.render_spotcheck(rows)
+
+
+def full_row():
+    auc = {"auc": 0.8, "low": 0.75, "high": 0.85, "n": 100, "positives": 10}
+    return {
+        "run_at": NOW.isoformat(), "rankers": config.RANKERS,
+        "arms_ab_since": "2026-10-09",
+        "arms_ab": {"feed": {"shown": 4, "opened": 2, "read": 1},
+                    "feed-cand": {"shown": 4, "opened": 3, "read": 2}},
+        "refine": {"rankers": {"control": {"shown": auc, "triage": None, "train_n": 5},
+                               "candidate": {"shown": auc, "triage": auc, "train_n": 6}},
+                   "word_count_baseline": {"shown": auc, "triage": auc},
+                   "top_fresh": {"control": [{"title": "<b>bold</b>", "url": "u", "score": 0.5}]}},
+        "spotcheck": {"shortlist": [{"title": "t", "slot": "feed", "url": "https://read.readwise.io/read/x",
+                                     "embedded_text": "see https://x.com/someone/status/1 and https://example.org/a"}],
+                      "random_feed": []},
+    }
+
+
+def test_the_refinement_page_reports_both_arms_and_escapes_titles(paths):
+    stats_store.record("shortlist", full_row())
+    markup = stats_page.render_refinement(stats_store.load("shortlist"))
+    assert "candidate" in markup and "0.800" in markup
+    assert "<b>bold</b>" not in markup and "&lt;b&gt;" in markup
+    assert "75.0%" in markup                       # candidate open rate, 3 of 4
+
+
+def test_the_spotcheck_never_shows_a_platform_link(paths):
+    stats_store.record("shortlist", full_row())
+    markup = stats_page.render_spotcheck(stats_store.load("shortlist"))
+    assert "x.com" not in markup
+    assert "example.org/a" in markup
+    assert "read.readwise.io/read/x" in markup
+
+
+def test_subpages_land_under_the_recommender_page(paths):
+    stats_store.record("shortlist", full_row())
+    stats_page.render_recommender_page()
+    for sub in ("refinement", "summaries"):
+        assert (paths / "html" / "recommender" / sub / "index.html").exists()
+    main = (paths / "html" / "recommender" / "index.html").read_text()
+    assert 'href="refinement/"' in main and 'href="summaries/"' in main

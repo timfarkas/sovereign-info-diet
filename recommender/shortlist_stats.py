@@ -46,7 +46,7 @@ def rating(doc):
     return None
 
 
-def live_arms(store):
+def live_arms(store, since=None):
     """Ranked vs random, measured on what he actually did. The honest metric.
 
     Each arm is counted once per document, not once per event, so a document
@@ -54,6 +54,8 @@ def live_arms(store):
     """
     seen = {}
     for event in store.events():
+        if since and event["cycle"] < since:
+            continue
         if event["action"] == "added" and event["doc_id"] not in seen:
             seen[event["doc_id"]] = event["slot"] or "unknown"
     arms = {}
@@ -76,6 +78,13 @@ def live_arms(store):
         arm["open_rate"] = arm["opened"] / arm["shown"] if arm["shown"] else None
         arm["read_rate"] = arm["read"] / arm["shown"] if arm["shown"] else None
     return arms
+
+
+def interleaving_since(store):
+    """The first cycle a candidate ranker drafted a pick, or None if none has yet."""
+    cycles = [e["cycle"] for e in store.events()
+              if e["action"] == "added" and (e["slot"] or "").endswith("-cand")]
+    return min(cycles) if cycles else None
 
 
 def overnight_signals(documents, since):
@@ -396,6 +405,11 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         "overnight": (None if sync_info.get("skipped")
                       else overnight_signals(documents, sync_info.get("since"))),
         "arms": live_arms(store),
+        # The A/B table only counts from the first night the candidate drafted,
+        # so the control's pre-interleaving history cannot flatter or sink it.
+        "arms_ab_since": interleaving_since(store),
+        "arms_ab": (live_arms(store, since=interleaving_since(store))
+                    if interleaving_since(store) else {}),
         "pools": trace.get("_pools", {}),
         "picks": picks,
         "evicted": evicted,

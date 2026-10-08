@@ -385,12 +385,15 @@ CONTRIBUTION_LABELS = {
     "topic": "topic (what it is about)",
     "length": "length (log words)",
     "format": "format (article/rss/email/...)",
+    "publication": "publication",
 }
 
 EVIDENCE_LABELS = {
     "rated": "you rated it", "favorited": "you favourited it",
     "read": "you read it", "opened": "you opened it",
     "passed": "shown and skipped", "ignored": "went stale unopened",
+    "rated_good": "you rated it good", "rated_bad": "you rated it bad",
+    "saved": "you saved it", "bounced": "opened, not read",
 }
 
 
@@ -401,13 +404,16 @@ def why_this_score(attr):
     contributions = attr.get("contributions") or {}
     base_p = attr.get("baseline_probability")
     final_p = attr.get("probability")
+    labels = dict(CONTRIBUTION_LABELS)
+    if "publication" in contributions:
+        labels["publication"] = f'publication ({attr.get("publication") or "other"})'
     body = (
         f'<p class="why">The average document in your library scores '
-        f'<strong>{pct(base_p, 2)}</strong>. These three terms take it to '
+        f'<strong>{pct(base_p, 2)}</strong>. These {len(contributions)} terms take it to '
         f'<strong>{pct(final_p, 2)}</strong>. Bars are log-odds and they add up '
         f'exactly -- the model is linear, so this is the score, not an '
         f'approximation of it.</p>'
-        + contribution_chart(contributions, CONTRIBUTION_LABELS)
+        + contribution_chart(contributions, labels)
     )
     for side, heading in (("like", "closest things you engaged with"),
                           ("unlike", "closest things you did not")):
@@ -949,10 +955,15 @@ def render_digest(rows, topic_key="ai"):
 
 SLOT_NAMES = {
     "feed": "ranked, fresh feed",
+    "feed-cand": "candidate ranker, fresh feed",
     "feed-random": "random control, fresh feed",
     "later": "ranked, resurfaced backlog",
+    "later-cand": "candidate ranker, backlog",
     "later-random": "random control, backlog",
 }
+
+SUBPAGES = [("refinement/", "recommendation refinement"),
+            ("summaries/", "summary spot-check")]
 
 
 def render_recommender(rows):
@@ -1111,7 +1122,7 @@ def render_recommender(rows):
     # -- live arms: the honest metric
     arms = last.get("arms") or {}
     arm_rows = []
-    for slot in ("feed", "feed-random", "later", "later-random"):
+    for slot in SLOT_NAMES:
         a = arms.get(slot) or {}
         arm_rows.append([
             esc(SLOT_NAMES.get(slot, slot)),
@@ -1135,7 +1146,7 @@ def render_recommender(rows):
           'column and the rated-bad column. That is deliberate: collapsing them '
           'would let the ranked arm bank a rejection as a win.</p>' 
         + f'<p class="why" style="margin-top:.8rem">{shown_total} shortlisted documents '
-          'total so far. At roughly 10 a night with 2 of them random, this table needs '
+          'total so far. At 12 a night with 4 of them random, this table needs '
           'months before the gap between a ranked row and its control means anything. '
           'It is the metric that will eventually be trustworthy, not the one that is '
           'trustworthy today.</p>' + stale_note + '</div>'
@@ -1217,11 +1228,155 @@ def render_recommender(rows):
     ) + '</div>'
 
     subtitle = (f'{len(rows)} run{"" if len(rows) == 1 else "s"} recorded &middot; '
-                f'last {esc(ago(last.get("run_at")))} &middot; 02:00 UTC nightly')
+                f'last {esc(ago(last.get("run_at")))} &middot; 02:00 UTC nightly &middot; '
+                + " &middot; ".join(f'<a href="{href}">{esc(label)}</a>'
+                                    for href, label in SUBPAGES))
     return page("Shortlist recommender", subtitle, status,
                 warn_html + head_tiles + perf + shortlist + evictions + live
                 + overnight + mechanics + history,
-                ("../ai-digest/", "digest status"))
+                [(href, label) for href, label in SUBPAGES]
+                + [("../ai-digest/", "digest status")])
+
+
+# -- recommender subpages ----------------------------------------------------
+
+def _auc_cell(a):
+    if not a:
+        return DASH
+    return (f'{a["auc"]:.3f} <span class="muted">[{a["low"]:.3f}&ndash;{a["high"]:.3f}]'
+            f' n={a["n"]:,}, {a["positives"]:,} pos</span>')
+
+
+def _arm_totals(arms, slots):
+    total = {"shown": 0, "opened": 0, "read": 0, "rated_good": 0, "rated_bad": 0}
+    for slot in slots:
+        for key in total:
+            total[key] += (arms.get(slot) or {}).get(key) or 0
+    shown = total["shown"]
+    total["open_rate"] = total["opened"] / shown if shown else None
+    total["read_rate"] = total["read"] / shown if shown else None
+    return total
+
+
+def render_refinement(rows):
+    """Control vs candidate ranker: live interleaved arms, then the offline sets."""
+    back = [("../", "recommender status"), ("../summaries/", "summary spot-check")]
+    last = rows[-1] if rows else {}
+    rankers = last.get("rankers")
+    if not rankers:
+        return page("Recommendation refinement", "no interleaved run recorded yet",
+                    pill("unknown", TEXT_3),
+                    '<p class="muted">Appears after the first nightly run that trains '
+                    'both a control and a candidate ranker.</p>', back)
+
+    spec = lambda r: " + ".join(  # noqa: E731
+        [f'labels: {r.get("scheme")}'] + (["publication one-hot"] if r.get("publications") else []))
+    who = table(["ranker", "what it is"],
+                [[esc(name), esc(spec(r))] for name, r in rankers.items()])
+
+    arms = last.get("arms_ab") or {}
+    since = last.get("arms_ab_since")
+    arm_rows = []
+    for name, slots in (("control", ("feed", "later")), ("candidate", ("feed-cand", "later-cand")),
+                        ("random", ("feed-random", "later-random"))):
+        a = _arm_totals(arms, slots)
+        arm_rows.append([esc(name), num(a["shown"]), num(a["opened"]), pct(a["open_rate"]),
+                         num(a["read"]), pct(a["read_rate"]), num(a["rated_good"]),
+                         num(a["rated_bad"])])
+    online = (
+        '<h2>live, interleaved</h2><div class="card">'
+        f'<p class="sub">Every shortlist pick since {esc(since or "--")}, by the ranker that '
+        'drafted it. Each night the ranked slots of both pools are split between the two '
+        'rankers by team draft -- same pool, same night, same mood -- so this is the '
+        'comparison that decides it. Random is the floor both should clear.</p>'
+        + table(["arm", "shown", "opened", "open rate", "read", "read rate",
+                 "rated good", "rated bad"], arm_rows, ["l"] + ["n"] * 7)
+        + '<p class="why" style="margin-top:.8rem">Four ranked picks per ranker a night, so '
+          'about 60 each after two weeks. A read-rate gap under ~15 points at that size is '
+          'noise. Ratings are the tiebreaker that counts: one <code>rate:bad</code> outweighs '
+          'a click.</p></div>')
+
+    refine = last.get("refine") or {}
+    res = refine.get("rankers") or {}
+    base = refine.get("word_count_baseline") or {}
+    off_rows = [[esc(name), _auc_cell(r.get("shown")), _auc_cell(r.get("triage")),
+                 f'{num(r.get("train_n"))} <span class="muted">({num(r.get("train_positives"))} pos)</span>']
+                for name, r in res.items()]
+    off_rows.append(["word count alone", _auc_cell(base.get("shown")),
+                     _auc_cell(base.get("triage")), DASH])
+    offline = (
+        '<h2>offline, common held-out sets</h2><div class="card">'
+        + (table(["ranker", "shown set auc", "triage set auc", "trained on"], off_rows,
+                 ["l", "n", "n", "n"]) if res else
+           '<p class="muted">Not measured this run.</p>')
+        + '<p class="why" style="margin-top:.8rem">Both sets are kept out of both rankers\' '
+          'training and labelled by one neutral rule (read &ge;100 words, rated good or '
+          'favourited = positive). <strong>shown</strong>: shortlist picks with a known '
+          'outcome -- he certainly saw these, but they are few and already pre-filtered by a '
+          'ranker. <strong>triage</strong>: every 5th arrival block in which he opened at least '
+          'half the feed on his own. Caveat: "triage" is built on the same exposure idea the '
+          'candidate\'s labels use, so it is a home game for the candidate. The nightly '
+          '"holdout auc" on the main page is NOT comparable across rankers -- each labelling '
+          'scheme defines its own holdout. Brackets are 90% bootstrap intervals.</p></div>')
+
+    tops = refine.get("top_fresh") or {}
+    side = ""
+    if tops:
+        side = '<h2>tonight\'s top 10 of the fresh feed, side by side</h2>'
+        for name, top in tops.items():
+            side += (f'<div class="card"><h3>{esc(name)}</h3>' + table(
+                ["", "site", "words", "score"],
+                [[f'<a href="{esc(t.get("url") or "")}">{esc(t.get("title"))}</a>',
+                  esc(t.get("site_name") or "?"), num(t.get("word_count")),
+                  num(t.get("score"), 3)] for t in top], ["l", "l", "n", "n"]) + '</div>')
+        side += ('<p class="why">Before cooldown and dedup, so a story can appear twice. '
+                 'Scores are each ranker\'s own and do not compare across the two.</p>')
+
+    history = [r for r in rows if r.get("refine")][-14:]
+    trend = ""
+    if history:
+        trend = '<h2>offline history</h2><div class="card">' + table(
+            ["run"] + [f"{n} {s}" for n in res for s in ("shown", "triage")],
+            [[esc((r.get("run_at") or "")[:10])]
+             + [num(get(r, "refine", "rankers", n, s, "auc"), 3) for n in res
+                for s in ("shown", "triage")] for r in reversed(history)],
+            ["l"] + ["n"] * (2 * len(res))) + '</div>'
+
+    subtitle = (f'control vs candidate &middot; last run {esc(ago(last.get("run_at")))} &middot; '
+                'edit <code>RANKERS</code> in recommender/config.py to try something new, '
+                'check it offline with <code>python recommender_refine.py</code>')
+    return page("Recommendation refinement", subtitle, pill("a/b", SERIES[0]),
+                who + online + offline + side + trend, back)
+
+
+def render_spotcheck(rows):
+    """Exactly what the encoder reads, for 10 shortlist picks and 10 random feed docs."""
+    back = [("../", "recommender status"), ("../refinement/", "recommendation refinement")]
+    spot = (rows[-1] if rows else {}).get("spotcheck")
+    if not spot:
+        return page("Summary spot-check", "no run recorded with a spot-check yet",
+                    pill("unknown", TEXT_3), '<p class="muted">Appears after the next run.</p>',
+                    back)
+
+    def entries(items):
+        out = ""
+        for e in items:
+            out += (f'<div class="card"><h3><a href="{esc(e.get("url") or "")}">'
+                    f'{esc(e.get("title") or e.get("id"))}</a></h3>'
+                    f'<p class="sub">{esc(e.get("site_name") or "?")} &middot; '
+                    f'{num(e.get("word_count"))} words &middot; {esc(e.get("slot"))}</p>'
+                    f'<div class="promptblock">{esc(scrub_platform_urls(e.get("embedded_text")))}'
+                    '</div></div>')
+        return out
+
+    body = ('<p class="why">Each block below is the literal string that goes into the encoder '
+            '(title, author, site, then the first 1,000 characters of Readwise\'s summary). '
+            'Nothing else about the document reaches the model -- no body text. If these read '
+            'as vague, the ranker is capped by them, whatever the head does.</p>'
+            '<h2>tonight\'s shortlist (first 10)</h2>' + entries(spot.get("shortlist") or [])
+            + '<h2>10 random documents from the feed</h2>' + entries(spot.get("random_feed") or []))
+    return page("Summary spot-check", f'from the run {esc(ago((rows[-1]).get("run_at")))}',
+                pill("diagnostic", SERIES[0]), body, back)
 
 
 # -- writing ------------------------------------------------------------------
@@ -1272,8 +1427,10 @@ def render_recommender_page():
     """Write the recommender page, or None if the status pages are disabled."""
     if not enabled():
         return None
-    return write_page(config.RECOMMENDER_PAGE,
-                      render_recommender(stats_store.load("shortlist")))
+    rows = stats_store.load("shortlist")
+    write_page(f"{config.RECOMMENDER_PAGE}/refinement", render_refinement(rows))
+    write_page(f"{config.RECOMMENDER_PAGE}/summaries", render_spotcheck(rows))
+    return write_page(config.RECOMMENDER_PAGE, render_recommender(rows))
 
 
 def render_all():
