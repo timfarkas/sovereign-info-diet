@@ -6,6 +6,7 @@
 # the tag behind Reader's built-in "Shortlist" view. Everything else is left
 # alone, so a bad ranking costs the reader nothing but a mediocre shortlist.
 
+import math
 import os
 
 from dotenv import load_dotenv
@@ -62,11 +63,20 @@ LATER_SLOTS = 3
 LATER_RANDOM_SLOTS = 1
 SHORTLIST_SIZE = FEED_SLOTS + LATER_SLOTS
 RESURFACE_SAMPLE_SIZE = 300    # random draw from `later` that resurfacing ranks
+# The fresh-feed random draw is damped against floods (Tim, KYRO-30): a
+# publication with n posts in the pool draws with total mass log(1+n), not n,
+# so each of its posts with weight log(1+n)/n. Measured 2026-10-08 on the
+# 1,896-doc pool: uniform gave bloomberg 62% + guardian 27% of draws and sites
+# with <=7 posts a week 4%; sqrt gave 25% + 16% / 39%; log gives 10% + 9% / 55%.
+# Still a known-probability draw, so its labels stay honest -- but its open rate
+# is now the floor of a de-spammed feed, not of the raw one. The backlog draw
+# stays uniform: `later` is what he saved by hand, there is no flood in it.
+RANDOM_PUBLICATION_MASS = math.log1p
 # Near-duplicates are not hypothetical: the first dry run handed back three
 # copies of the same newsletter, eating half the ranked slots. Cosine on the
 # embeddings catches both exact repeats and the same story from two sources.
 # Only ranked picks are deduplicated -- a random arm that skipped duplicates
-# would no longer be a uniform draw, and it is the measurement.
+# would no longer be a known-probability draw, and it is the measurement.
 DEDUP_SIMILARITY = 0.93
 
 # Length balance. Left alone the ranker builds a long-form monoculture: measured

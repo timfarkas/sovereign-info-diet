@@ -142,6 +142,23 @@ def _duplicates(candidate, already, embeddings):
     return False
 
 
+def damped_sample(docs, k, pool, rng):
+    """k of docs without replacement, a publication with n posts in `pool`
+    drawing with total mass RANDOM_PUBLICATION_MASS(n) instead of n."""
+    counts = {}
+    for d in pool:
+        counts[recommender_model.site(d)] = counts.get(recommender_model.site(d), 0) + 1
+    left = list(docs)
+    weights = [config.RANDOM_PUBLICATION_MASS(counts[recommender_model.site(d)])
+               / counts[recommender_model.site(d)] for d in left]
+    drawn = []
+    while left and len(drawn) < k:
+        i = rng.choices(range(len(left)), weights=weights)[0]
+        drawn.append(left.pop(i))
+        weights.pop(i)
+    return drawn
+
+
 def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...].
 
@@ -194,8 +211,11 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     ]
     later = [d for d in store.documents(location="later") if eligible(d)]
 
-    def fill(pool, label, total, random_slots, short_slots):
-        """Rank the pool, take the top few, then draw the rest uniformly from it.
+    def fill(pool, label, total, random_slots, short_slots, damp=False):
+        """Rank the pool, take the top few, then draw the rest at random from it.
+
+        The draw is uniform unless `damp`, which weights it against flooding
+        publications (see config.RANDOM_PUBLICATION_MASS).
 
         Both arms come out of the same pool on purpose: that is what makes
         comparing their open rates a statement about the ranking. `short_slots`
@@ -251,7 +271,8 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
         picks = take(ranked_slots, picks)
         taken = {d["id"] for d, _, _ in picks}
         rest = [d for d in pool if d["id"] not in taken]
-        drawn = rng.sample(rest, min(random_slots, len(rest)))
+        drawn = (damped_sample(rest, random_slots, pool, rng) if damp
+                 else rng.sample(rest, min(random_slots, len(rest))))
         for d in drawn:
             trace[d["id"]] = {"rank": None, "pool_size": len(pool), "short_reserve": False}
         picks += [(d, f"{label}-random", None) for d in drawn]
@@ -268,7 +289,8 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     }
 
     return fill(
-        feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS, config.FEED_SHORT_SLOTS
+        feed, "feed", config.FEED_SLOTS, config.FEED_RANDOM_SLOTS, config.FEED_SHORT_SLOTS,
+        damp=True,
     ) + fill(
         backlog,
         "later",

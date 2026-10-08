@@ -757,3 +757,25 @@ def test_a_document_one_ranker_cannot_see_is_not_eligible(store):
     wide.embedding_ = "wide#1"
     chosen = shortlist_job.pick(store, wide, None, now=NOW)
     assert "f0" not in {d["id"] for d, _, _ in chosen}
+
+
+# -- damped random draw (KYRO-30) ------------------------------------------------
+
+
+def test_the_random_feed_draw_damps_a_flooding_publication():
+    import random
+    pool = ([doc(f"flood{i}", site_name="bloomberg.com") for i in range(100)]
+            + [doc(f"one{i}", site_name=f"site{i}.org") for i in range(10)])
+    rng = random.Random(0)
+    flood = sum(shortlist_job.damped_sample(pool, 1, pool, rng)[0]["site_name"] == "bloomberg.com"
+                for _ in range(2000))
+    # uniform would give 100/110 = 91%; log(101) / (log(101) + 10 log(2)) = 40%
+    assert 0.33 < flood / 2000 < 0.47
+
+
+def test_the_damped_draw_never_repeats_and_stops_at_the_pool():
+    import random
+    pool = [doc(f"d{i}", site_name="a" if i % 2 else "b") for i in range(5)]
+    drawn = shortlist_job.damped_sample(pool, 3, pool, random.Random(1))
+    assert len({d["id"] for d in drawn}) == 3
+    assert len(shortlist_job.damped_sample(pool, 9, pool, random.Random(1))) == 5

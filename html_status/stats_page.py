@@ -1136,7 +1136,9 @@ def render_recommender(rows):
         '<p class="sub">Every document ever shortlisted, by the arm that chose it, '
         'scored on what you actually did with it. Each random arm is drawn from the '
         'same pool as the ranked picks on the line above it, so the two rows are '
-        'directly comparable.</p>'
+        'directly comparable. Since 2026-10-09 the fresh-feed draw is damped against '
+        'floods (a site with n posts in the pool draws as if it had log(1+n)), so that row '
+        'is the floor of a de-spammed feed.</p>'
         + table(["arm", "shown", "opened", "open rate", "read", "read rate",
                  "rated good", "rated bad"], arm_rows,
                 ["l", "n", "n", "n", "n", "n", "n", "n"])
