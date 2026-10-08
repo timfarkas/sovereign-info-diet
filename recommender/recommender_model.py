@@ -280,14 +280,20 @@ def publications_of(model):
     return list(getattr(model, "publications_", ()))
 
 
+def embedding_of(model):
+    """The store key of the vectors a model was fitted on."""
+    return getattr(model, "embedding_", config.EMBED_KEY)
+
+
 def train(store, now=None, scheme="current", publications=False, exclude=(), embedding=None):
     """Fit on everything labelled. Returns (model, stats) or (None, stats).
 
     `scheme` names the labelling scheme, `publications` switches the publication one-hot
     on, `exclude` holds doc ids to keep out of training (an evaluation set),
     `embedding` names the store's vectors to fit on (default config.EMBED_KEY).
-    The fitted vocabulary rides on the model as `publications_`, so scoring and
-    attribution always build exactly the columns the model was fitted on.
+    The fitted vocabulary rides on the model as `publications_` and the vectors'
+    key as `embedding_`, so scoring and attribution always build exactly the
+    columns the model was fitted on.
     """
     labels = derive_labels(store, now=now, scheme=scheme)
     embeddings = store.embeddings(embedding or config.EMBED_KEY)
@@ -307,6 +313,7 @@ def train(store, now=None, scheme="current", publications=False, exclude=(), emb
     model = LogisticRegression(max_iter=2000, C=1.0, class_weight="balanced")
     model.fit(X, y, sample_weight=weights)
     model.publications_ = vocabulary
+    model.embedding_ = embedding or config.EMBED_KEY
     return model, stats
 
 

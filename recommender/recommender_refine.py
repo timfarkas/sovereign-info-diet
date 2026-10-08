@@ -97,18 +97,22 @@ def score_set(model, labels, by_id, embeddings):
     return [labels[d["id"]] for d in docs], [scores[d["id"]] for d in docs]
 
 
-def top_fresh(store, models, documents, embeddings, k=10, now=None):
-    """Each ranker's top k of the fresh feed, before cooldown and dedup."""
+def top_fresh(store, models, documents, vectors, k=10, now=None):
+    """Each ranker's top k of the fresh feed, before cooldown and dedup.
+
+    `vectors` maps embedding keys to {doc_id: vector}; each model scores with
+    its own, over the documents every one of them covers."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=config.FEED_CANDIDATE_DAYS)
     pool = [d for d in documents
             if d.get("location") == "feed" and not d.get("first_opened_at")
-            and d["id"] in embeddings and (_parse(d.get("saved_at")) or now) >= cutoff]
+            and all(d["id"] in v for v in vectors.values()) and (_parse(d.get("saved_at")) or now) >= cutoff]
     out = {}
     for name, model in models.items():
         if model is None:
             continue
-        scores = recommender_model.score_documents(pool, embeddings, model)
+        scores = recommender_model.score_documents(
+            pool, vectors[recommender_model.embedding_of(model)], model)
         ranked = sorted(pool, key=lambda d: -scores[d["id"]])[:k]
         out[name] = [{"id": d["id"], "title": (d.get("title") or d["id"])[:100],
                       "site_name": d.get("site_name"), "word_count": d.get("word_count"),
@@ -133,7 +137,7 @@ def compare(store, rankers=None, now=None):
         if not embeddings:
             continue
         model, stats = recommender_model.train(store, now=now, exclude=excluded, **spec)
-        if key == config.EMBED_KEY:
+        if name in config.RANKERS:
             models[name] = model
         entry = {"spec": spec, "train_n": stats["usable"], "train_positives": stats["positives"],
                  "by_reason": stats["by_reason"]}
@@ -152,7 +156,8 @@ def compare(store, rankers=None, now=None):
             [labels[i] for i in ids], [by_id[i].get("word_count") or 0 for i in ids])
     return {"rankers": results, "word_count_baseline": baselines,
             "top_fresh": top_fresh(store, models, documents,
-                                   vectors.get(config.EMBED_KEY) or store.embeddings(config.EMBED_KEY), now=now)}
+                                   {recommender_model.embedding_of(m): vectors[recommender_model.embedding_of(m)]
+                                    for m in models.values() if m is not None}, now=now)}
 
 
 def main():

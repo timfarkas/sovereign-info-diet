@@ -1195,6 +1195,9 @@ def render_recommender(rows):
                       + (" (full backfill)" if sync.get("full") else ""),
               num(sync.get("duration_s"), 1, " s")],
              ["embed", f'{num(embed.get("embedded"))} new vectors'
+                       + (f', {num((embed.get("fulltext") or {}).get("embedded"))} full-text '
+                          f'({num((embed.get("fulltext") or {}).get("words"))} words)'
+                          if embed.get("fulltext") else "")
                        + (f', {num(embed.get("dropped_superseded"))} dropped from a '
                           f'superseded recipe' if embed.get("dropped_superseded") else ""),
               num(embed.get("duration_s"), 1, " s")],
@@ -1270,7 +1273,8 @@ def render_refinement(rows):
                     'both a control and a candidate ranker.</p>', back)
 
     spec = lambda r: " + ".join(  # noqa: E731
-        [f'labels: {r.get("scheme")}'] + (["publication one-hot"] if r.get("publications") else []))
+        [f'labels: {r.get("scheme")}'] + (["publication one-hot"] if r.get("publications") else [])
+        + [f'vectors: {r.get("embedding") or "bge-small, title + summary"}'])
     who = table(["ranker", "what it is"],
                 [[esc(name), esc(spec(r))] for name, r in rankers.items()])
 

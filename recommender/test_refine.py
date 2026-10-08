@@ -48,6 +48,10 @@ def stock(store, documents, seed=0):
         vectors[d["id"]] = v / np.linalg.norm(v)
     store.upsert_documents(documents)
     store.save_embeddings(config.EMBED_KEY, vectors)
+    # the full-text vectors: another space, another width
+    store.save_embeddings(config.MISTRAL_EMBED_KEY, {
+        i: v / np.linalg.norm(v) for i, v in
+        ((d["id"], rng.standard_normal(32).astype(np.float32)) for d in documents)})
 
 
 def corpus(monkeypatch, blocks=10, per_block=10):
@@ -125,7 +129,7 @@ def test_compare_scores_every_ranker_on_the_same_sets(store, monkeypatch):
     stock(store, docs)
     result = recommender_refine.compare(store, now=NOW)
     sizes = {name: r["triage"]["n"] for name, r in result["rankers"].items() if r["triage"]}
-    assert set(sizes) == set(config.RANKERS)
+    assert set(sizes) == set(config.RANKERS) | set(config.OFFLINE_RANKERS)
     assert len(set(sizes.values())) == 1
     assert result["word_count_baseline"]["triage"] is None or \
         result["word_count_baseline"]["triage"]["n"] == next(iter(sizes.values()))

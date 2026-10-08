@@ -64,6 +64,10 @@ def stock(store, documents, embed=True):
             v = rng.standard_normal(config.EMBED_DIM).astype(np.float32)
             vectors[d["id"]] = v / np.linalg.norm(v)
         store.save_embeddings(config.EMBED_KEY, vectors)
+        # the full-text vectors: another space, another width
+        store.save_embeddings(config.MISTRAL_EMBED_KEY, {
+            i: v / np.linalg.norm(v) for i, v in
+            ((d["id"], rng.standard_normal(32).astype(np.float32)) for d in documents)})
 
 
 # -- fake transport ----------------------------------------------------------
@@ -668,3 +672,88 @@ def test_an_old_store_keeps_its_vectors_through_the_rekeying(tmp_path):
     store.save_embeddings("other", {"a": np.zeros(4, dtype=np.float32)})
     assert list(store.embeddings("m")["a"]) == [1, 1, 1, 1]
     assert "a" in store.embeddings("other")
+
+
+# -- full text (KYRO-30) -------------------------------------------------------
+
+
+class HtmlClient(RecordingClient):
+    def __init__(self, documents):
+        super().__init__()
+        self.docs, self.kwargs = documents, None
+
+    def documents(self, **kwargs):
+        self.kwargs = kwargs
+        return iter(self.docs)
+
+
+def test_sync_keeps_plain_full_text_and_never_the_html(store):
+    client = HtmlClient([doc("a", html_content="<p>hello <b>world</b></p><script>x()</script>"),
+                         doc("pdf")])
+    shortlist_job.sync(store, client)
+    assert client.kwargs["html"] is True
+    assert store.fulltext(["a", "pdf"]) == {"a": "hello world", "pdf": ""}
+    assert "html_content" not in store.document("a")
+
+
+def test_a_footer_is_cut_only_in_the_second_half():
+    import recommender_embed
+    body = "word " * 50
+    assert recommender_embed.plain_text(f"<p>{body}unsubscribe here</p>").split() == body.split()
+    early = f"<p>you are receiving this because {body}</p>"
+    assert recommender_embed.plain_text(early).endswith("word")
+
+
+def test_a_long_document_is_one_weighted_mean_across_requests(monkeypatch):
+    import recommender_embed
+    monkeypatch.setattr(config, "MISTRAL_CHUNK_WORDS", 10)
+    monkeypatch.setattr(config, "MISTRAL_BATCH_WORDS", 10)
+    calls = []
+
+    def request(texts):
+        calls.append(texts)
+        # first chunk points along x, every later one along y
+        return [[1.0, 0.0] if len(calls) == 1 else [0.0, 1.0] for _ in texts]
+
+    d = doc("long", title="t", author="", site_name="", summary="")
+    vectors = recommender_embed.mistral_embed_documents([d], {"long": "w " * 29}, request)
+    assert len(calls) == 3                          # 30 words in 10-word chunks
+    v = vectors["long"]
+    assert np.isclose(np.linalg.norm(v), 1.0) and v[1] > v[0] > 0
+
+
+def test_a_runaway_full_text_embed_stops_before_spending(store, monkeypatch):
+    import recommender_embed
+    stock(store, [doc("a"), doc("b")], embed=False)
+    store.save_fulltext({"a": "w " * 500, "b": "w " * 500})
+    monkeypatch.setattr(config, "MISTRAL_MAX_WORDS_PER_RUN", 800)
+    monkeypatch.setattr(recommender_embed, "mistral_request",
+                        lambda texts: pytest.fail("called the API"))
+    with pytest.raises(RuntimeError, match="MISTRAL_MAX_WORDS_PER_RUN"):
+        shortlist_job.embed_fulltext(store)
+
+
+def test_each_ranker_scores_with_its_own_vectors(store):
+    docs = [doc(f"f{i}") for i in range(12)]
+    stock(store, docs)
+    rng = np.random.default_rng(3)
+    store.save_embeddings("wide#1", {d["id"]: rng.standard_normal(32).astype(np.float32)
+                                     for d in docs})
+    wide = AxisModel(axis=0)
+    wide.embedding_ = "wide#1"
+    chosen = shortlist_job.pick(store, wide, None, now=NOW)
+    ranked = [d["id"] for d, slot, _ in chosen if slot == "feed"]
+    vectors = store.embeddings("wide#1")
+    best = sorted((d["id"] for d in docs), key=lambda i: -vectors[i][0])
+    assert len(ranked) == 6 and set(ranked) == set(best[:6])
+
+
+def test_a_document_one_ranker_cannot_see_is_not_eligible(store):
+    docs = [doc(f"f{i}") for i in range(12)]
+    stock(store, docs)
+    store.save_embeddings("wide#1", {d["id"]: np.ones(4, dtype=np.float32)
+                                     for d in docs if d["id"] != "f0"})
+    wide = AxisModel(axis=0)
+    wide.embedding_ = "wide#1"
+    chosen = shortlist_job.pick(store, wide, None, now=NOW)
+    assert "f0" not in {d["id"] for d, _, _ in chosen}

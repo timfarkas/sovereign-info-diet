@@ -230,7 +230,7 @@ def attribution(doc, vector, model, baseline):
     if len(w) != len(x) or len(baseline) != len(x):
         return None
     delta = w * (x - baseline)
-    dim = config.EMBED_DIM
+    dim = len(vector)
     formats = dim + 1 + len(recommender_model.CATEGORIES)
     contributions = {
         "topic": float(delta[:dim].sum()),
@@ -308,8 +308,15 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
     labels = recommender_model.derive_labels(store)
     positives = positive_matrix(labels, embeddings)
     labelled = labelled_matrix(labels, embeddings)
+    # Attribution reads each model's own vectors; neighbours stay on bge.
+    own = {}
+    for m in (model, candidate):
+        if m is not None:
+            key = recommender_model.embedding_of(m)
+            own[key] = embeddings if key == config.EMBED_KEY else own.get(key) or store.embeddings(key)
     baselines = {
-        id(m): baseline_features(documents, embeddings, recommender_model.publications_of(m))
+        id(m): baseline_features(documents, own[recommender_model.embedding_of(m)],
+                                 recommender_model.publications_of(m))
         for m in (model, candidate) if m is not None
     }
 
@@ -333,8 +340,8 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         explain = None
         if not slot.endswith("-random"):
             ranker = candidate if slot.endswith("-cand") else model
-            explain = attribution(doc, embeddings.get(doc["id"]), ranker,
-                                  baselines.get(id(ranker)))
+            explain = (attribution(doc, own[recommender_model.embedding_of(ranker)].get(doc["id"]), ranker,
+                                   baselines.get(id(ranker))) if ranker is not None else None)
             near_by_label = evidence(doc["id"], embeddings, labelled)
             if near_by_label and explain:
                 explain["like"] = titled(near_by_label["like"])

@@ -32,21 +32,38 @@ def log(message):
 
 
 def sync(store, client, full=False):
-    """Pull documents Readwise has touched since the last run."""
+    """Pull documents Readwise has touched since the last run, with their full text.
+
+    The html is cut to plain text into the store's fulltext table and never kept
+    on the document row.
+    """
     since = None if full else store.get_meta("last_sync")
     started = datetime.now(timezone.utc).isoformat()
     total = 0
     batch = []
-    for doc in client.documents(updated_after=since):
+
+    def flush(batch):
+        store.save_fulltext({d["id"]: recommender_embed.plain_text(d.pop("html_content", None))
+                             for d in batch})
+        return store.upsert_documents(batch)
+
+    for doc in client.documents(updated_after=since, html=True):
         batch.append(doc)
         if len(batch) >= 200:
-            total += store.upsert_documents(batch)
+            total += flush(batch)
             batch = []
     if batch:
-        total += store.upsert_documents(batch)
+        total += flush(batch)
     store.set_meta("last_sync", started)
     log(f"synced {total} documents ({'full backfill' if full else f'since {since}'})")
     return total
+
+
+def used_embeddings():
+    """Every vector key some ranker fits on. bge is always one: dedup, the taste
+    vector and the stats page work on it whatever the rankers use."""
+    specs = list(config.RANKERS.values()) + list(config.OFFLINE_RANKERS.values())
+    return {config.EMBED_KEY} | {s["embedding"] for s in specs if "embedding" in s}
 
 
 def embed_missing(store, limit=None):
@@ -54,22 +71,56 @@ def embed_missing(store, limit=None):
     pending = store.missing_embeddings(config.EMBED_KEY)
     if limit:
         pending = pending[:limit]
-    if not pending:
-        log("embeddings up to date")
-        return {"pending": 0, "embedded": 0, "dropped_superseded": 0}
-    log(f"embedding {len(pending)} documents")
     done = 0
+    if pending:
+        log(f"embedding {len(pending)} documents")
     for start in range(0, len(pending), 200):
         chunk = pending[start : start + 200]
         vectors = recommender_embed.embed_documents(chunk)
         store.save_embeddings(config.EMBED_KEY, vectors)
         done += len(vectors)
         log(f"  {done}/{len(pending)}")
-    offline = {spec["embedding"] for spec in config.OFFLINE_RANKERS.values() if "embedding" in spec}
-    dropped = store.forget_other_embeddings(config.EMBED_KEY, *offline)
-    if dropped:
-        log(f"dropped {dropped} vectors from a superseded text recipe")
-    return {"pending": len(pending), "embedded": done, "dropped_superseded": dropped}
+    info = {"pending": len(pending), "embedded": done}
+    if config.MISTRAL_EMBED_KEY in used_embeddings():
+        info["fulltext"] = embed_fulltext(store, limit)
+    keys = used_embeddings()
+    unknown = keys - {config.EMBED_KEY, config.MISTRAL_EMBED_KEY}
+    if unknown:
+        raise ValueError(f"a ranker wants vectors nothing here embeds: {sorted(unknown)}")
+    info["dropped_superseded"] = store.forget_other_embeddings(*keys)
+    if info["dropped_superseded"]:
+        log(f"dropped {info['dropped_superseded']} vectors from a superseded text recipe")
+    if not pending and not (info.get("fulltext") or {}).get("pending"):
+        log("embeddings up to date")
+    return info
+
+
+def embed_fulltext(store, limit=None):
+    """mistral-embed whatever has no full-text vector yet. Costs money, so it
+    refuses a run bigger than config.MISTRAL_MAX_WORDS_PER_RUN."""
+    pending = store.missing_embeddings(config.MISTRAL_EMBED_KEY)
+    if limit:
+        pending = pending[:limit]
+    if not pending:
+        return {"pending": 0, "embedded": 0, "words": 0}
+    bodies = store.fulltext(d["id"] for d in pending)
+    words = sum(len(c.split()) for d in pending
+                for c in recommender_embed.fulltext_chunks(d, bodies.get(d["id"])))
+    if words > config.MISTRAL_MAX_WORDS_PER_RUN:
+        raise RuntimeError(
+            f"{len(pending)} documents / {words:,} words to full-text embed, over "
+            f"MISTRAL_MAX_WORDS_PER_RUN={config.MISTRAL_MAX_WORDS_PER_RUN:,} -- a lost table or a "
+            "key bump? cap it with --embed-limit or raise the limit on purpose")
+    log(f"full-text embedding {len(pending)} documents ({words:,} words, "
+        f"{sum(d['id'] in bodies for d in pending)} with a body)")
+    done = 0
+    for start in range(0, len(pending), 200):
+        chunk = pending[start : start + 200]
+        vectors = recommender_embed.mistral_embed_documents(chunk, bodies)
+        store.save_embeddings(config.MISTRAL_EMBED_KEY, vectors)
+        done += len(vectors)
+        log(f"  {done}/{len(pending)}")
+    return {"pending": len(pending), "embedded": done, "words": words}
 
 
 def _parse(stamp):
@@ -110,7 +161,15 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     now = now or datetime.now(timezone.utc)
     rng = rng or random.Random()
     trace = {} if trace is None else trace
+    # bge vectors do the dedup whatever a ranker scores with; each ranker scores
+    # with its own. A document needs all of them to be eligible, so neither
+    # ranker can win a slot just because the other could not see it.
     embeddings = store.embeddings(config.EMBED_KEY)
+    vectors = {config.EMBED_KEY: embeddings}
+    for ranker in (model, candidate):
+        if ranker is not None:
+            key = recommender_model.embedding_of(ranker)
+            vectors[key] = vectors.get(key) or store.embeddings(key)
     shown = store.last_shown()
     cooldown = now - timedelta(days=config.RESHOW_COOLDOWN_DAYS)
 
@@ -122,7 +181,7 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
         return (
             not recently_shown(doc["id"])
             and config.SHORTLIST_TAG not in recommender_model._tags(doc)
-            and doc["id"] in embeddings
+            and all(doc["id"] in v for v in vectors.values())
         )
 
     fresh_cutoff = now - timedelta(days=config.FEED_CANDIDATE_DAYS)
@@ -150,7 +209,8 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
                                        (f"{label}-cand", candidate, None)):
             if ranker is None and fallback is None:
                 continue
-            scores = recommender_model.score_documents(pool, embeddings, ranker, fallback)
+            own = vectors[recommender_model.embedding_of(ranker)] if ranker is not None else embeddings
+            scores = recommender_model.score_documents(pool, own, ranker, fallback)
             ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
             teams.append({"slot": slot, "scores": scores, "ranked": ranked,
                           "rank_of": {d["id"]: i + 1 for i, d in enumerate(ranked)}})

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SQLite store for the shortlist recommender.
 
-One file, three tables: the documents as Readwise last reported them, their
+One file: the documents as Readwise last reported them, their full text, their
 embeddings, and the log of what we shortlisted and what became of it. Labels are
 NOT stored -- they are derived from these tables on every run, so changing the
 labelling rules never leaves stale labels behind.
@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS shortlist_events (
     score REAL,
     cycle TEXT NOT NULL,           -- ISO date of the run
     created_at TEXT NOT NULL
+);
+
+-- plain full text, footer cut: what the full-text embedding reads
+CREATE TABLE IF NOT EXISTS fulltext (
+    doc_id TEXT PRIMARY KEY,
+    body TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -138,6 +144,23 @@ class Store:
             "SELECT * FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def save_fulltext(self, bodies):
+        """bodies: {doc_id: plain text}"""
+        self.conn.executemany("INSERT OR REPLACE INTO fulltext (doc_id, body) VALUES (?, ?)",
+                              list(bodies.items()))
+        self.conn.commit()
+
+    def fulltext(self, doc_ids):
+        """{doc_id: plain text} for those of doc_ids that have any."""
+        out = {}
+        ids = list(doc_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            out.update(self.conn.execute(
+                f"SELECT doc_id, body FROM fulltext WHERE doc_id IN ({','.join('?' * len(chunk))})",
+                chunk).fetchall())
+        return out
 
     # -- embeddings ----------------------------------------------------------
 

@@ -146,6 +146,22 @@ BULK_CLEAR_OPENS = 20
 # straight out of the October flood, which he never looked at.
 PUBLICATION_MIN_DOCS = 15
 
+# Full-text embeddings (KYRO-30): mistral-embed over each document's whole text,
+# fetched with the nightly sync (withHtmlContent) and kept as plain text in the
+# store. Text = document_text() + the footer-cut body, cut into CHUNK-word pieces
+# (CHUNK_CHARS caps base64/url soup, which tokenises at ~1 token/char); the doc
+# vector is the word-weighted mean of its chunk vectors, L2-normed. Bump the key
+# if any of that changes. ~2.5k tokens/doc at $0.10/M: a 300-doc night is ~$0.08.
+MISTRAL_EMBED_KEY = "mistral-embed#fulltext1"
+MISTRAL_CHUNK_WORDS = 1500
+MISTRAL_CHUNK_CHARS = 8000
+MISTRAL_BATCH_WORDS = 9000     # per request
+MISTRAL_BATCH_CHUNKS = 32
+# A night that would embed more words than this is a bug (a key bump, a lost
+# table), not news: it stops loudly instead of quietly spending ~$4 on a re-embed.
+# Re-run with --embed-limit, or raise this, on purpose.
+MISTRAL_MAX_WORDS_PER_RUN = 5_000_000
+
 # The two rankers the nightly cycle interleaves. `control` is what ran before
 # KYRO-30, unchanged; `candidate` is what is being tested against it. To try a
 # new idea, edit `candidate` -- the slate, the arms and the refinement page all
@@ -156,13 +172,8 @@ RANKERS = {
 }
 # Extra rows for the refinement page's offline table only -- never drafted into
 # the live slate. "embedding" names the vectors a row is fitted on (default
-# EMBED_KEY); a row whose vectors are not in the store is skipped. The mistral
-# vectors are mistral-embed over each document's full text, chunks averaged
-# (KYRO-30), loaded once by hand: nothing embeds new documents with it, so
-# these rows only ever see the library as of that load.
-MISTRAL_EMBED_KEY = "mistral-embed#fulltext1"
+# EMBED_KEY); a row whose vectors are not in the store is skipped.
 OFFLINE_RANKERS = {
     f"{name} \u00b7 mistral full text": {**spec, "embedding": MISTRAL_EMBED_KEY}
     for name, spec in RANKERS.items()
 }
-
