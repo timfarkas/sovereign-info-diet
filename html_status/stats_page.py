@@ -1292,8 +1292,9 @@ def render_refinement(rows):
         + table(["arm", "shown", "opened", "open rate", "read", "read rate",
                  "rated good", "rated bad"], arm_rows, ["l"] + ["n"] * 7)
         + '<p class="why" style="margin-top:.8rem">Four ranked picks per ranker a night, so '
-          'about 60 each after two weeks. A read-rate gap under ~15 points at that size is '
-          'noise. Ratings are the tiebreaker that counts: one <code>rate:bad</code> outweighs '
+          'about 60 each after two weeks. At a ~40% read rate each arm\'s rate is then '
+          'uncertain by ~6 points, so the gap between two arms by ~9: a gap under ~18 '
+          'points (2 of those) is noise. Ratings are the tiebreaker that counts: one <code>rate:bad</code> outweighs '
           'a click.</p></div>')
 
     refine = last.get("refine") or {}
@@ -1314,8 +1315,10 @@ def render_refinement(rows):
           'favourited = positive). <strong>shown</strong>: shortlist picks with a known '
           'outcome -- he certainly saw these, but they are few and already pre-filtered by a '
           'ranker. <strong>triage</strong>: every 5th arrival block in which he opened at least '
-          'half the feed on his own. Caveat: "triage" is built on the same exposure idea the '
-          'candidate\'s labels use, so it is a home game for the candidate. The nightly '
+          'half the feed on his own, minus everything bulk-cleared (&ge;20 "mark seen" in one '
+          'minute -- a blind clear is not a no). Caveat: "triage" is built on the same '
+          'exposure idea the candidate\'s labels use, and its &ge;100-words bar is the '
+          'candidate\'s read bar, so it is a home game for the candidate. The nightly '
           '"holdout auc" on the main page is NOT comparable across rankers -- each labelling '
           'scheme defines its own holdout. Brackets are 90% bootstrap intervals.</p></div>')
 
