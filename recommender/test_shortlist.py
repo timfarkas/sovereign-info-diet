@@ -242,6 +242,114 @@ def test_a_same_day_eviction_is_not_evidence_he_passed(store):
     assert "a" not in recommender_model.derive_labels(store, now=NOW)
 
 
+# -- the exposure labelling scheme --------------------------------------------
+
+
+def block_docs(prefix, opened, unopened, days_ago):
+    """One arrival block: `opened` docs he opened and bounced, `unopened` he skipped."""
+    out = [doc(f"{prefix}o{i}", saved_at=iso(days_ago), first_opened_at=iso(days_ago))
+           for i in range(opened)]
+    out += [doc(f"{prefix}u{i}", saved_at=iso(days_ago)) for i in range(unopened)]
+    return out
+
+
+def test_a_skip_he_saw_weighs_more_than_one_he_never_saw(store, monkeypatch):
+    """The point of the scheme: 9 of 10 opened means the skip was a real choice."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("scanned", 9, 1, 40) + block_docs("flood", 1, 9, 20))
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    hard, soft = labels["scannedu0"], labels["floodu0"]
+    assert hard[0] == soft[0] == 0
+    assert hard[2] == soft[2] == "ignored"
+    assert hard[1] == pytest.approx(config.EXPOSURE_WEIGHTS["ignored"] * 0.9)
+    assert soft[1] == pytest.approx(config.EXPOSURE_WEIGHTS["ignored"] * 0.1)
+
+
+def test_a_block_he_never_opened_contributes_no_negatives(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("flood", 0, 10, 20))
+    assert recommender_model.derive_labels(store, now=NOW, scheme="exposure") == {}
+
+
+def test_shortlist_opens_are_not_evidence_he_scanned_the_block(store, monkeypatch):
+    """He opened it because we put it in front of him, not because he browsed."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("b", 5, 5, 20))
+    for i in range(5):
+        store.log_event(f"bo{i}", "added", "2026-09-01")
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert "bu0" not in labels                    # organic open rate is 0/5
+    assert labels["bo0"] == (0, config.EXPOSURE_WEIGHTS["bounced"], "bounced")
+
+
+def test_positives_keep_full_weight_however_little_he_scanned(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("flood", 0, 9, 20) + [
+        doc("good", saved_at=iso(20), tags={config.RATE_GOOD_TAG: {}}),
+    ])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert labels["good"] == (1, config.EXPOSURE_WEIGHTS["rated_good"], "rated_good")
+
+
+def test_a_hand_saved_article_is_not_a_saved_positive(store):
+    """Everything hand-saved lives in `later`; only a move out of the feed is a vote."""
+    stock(store, [
+        doc("moved", location="later", category="rss", saved_at=iso(30)),
+        doc("mine", location="later", category="article", saved_at=iso(30)),
+    ])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert labels["moved"] == (1, config.EXPOSURE_WEIGHTS["saved"], "saved")
+    assert "mine" not in labels
+
+
+def test_an_unknown_scheme_fails_loudly(store):
+    with pytest.raises(ValueError):
+        recommender_model.derive_labels(store, now=NOW, scheme="exposre")
+
+
+# -- publication as a feature ------------------------------------------------
+
+
+def test_every_document_lights_exactly_one_publication_column():
+    vector = np.zeros(config.EMBED_DIM, dtype=np.float32)
+    pubs = ["the guardian", "wired"]
+    width = config.EMBED_DIM + 1 + len(recommender_model.CATEGORIES)
+    for name in ("The Guardian ", "wired", "nobody.example", None):
+        x = recommender_model.features(doc("a", site_name=name), vector, pubs)
+        assert len(x) == recommender_model.feature_count(pubs)
+        assert x[width:].sum() == 1.0
+    other = recommender_model.features(doc("a", site_name="nobody.example"), vector, pubs)
+    assert other[-1] == 1.0
+
+
+def test_publications_add_no_age_signal():
+    vector = np.zeros(config.EMBED_DIM, dtype=np.float32)
+    old = recommender_model.features(doc("a", saved_at=iso(900)), vector, ["example.com"])
+    new = recommender_model.features(doc("a", saved_at=iso(0)), vector, ["example.com"])
+    assert np.array_equal(old, new)
+
+
+def test_a_model_scores_with_the_vocabulary_it_was_fitted_on(store, monkeypatch):
+    monkeypatch.setattr(config, "PUBLICATION_MIN_DOCS", 5)
+    good = [doc(f"g{i}", site_name="good.example", location="archive",
+                reading_progress=1.0) for i in range(30)]
+    bad = [doc(f"b{i}", site_name="bad.example", saved_at=iso(30),
+               tags={config.RATE_BAD_TAG: {}}) for i in range(30)]
+    stock(store, good + bad + [doc("new", site_name="good.example")])
+    model, _ = recommender_model.train(store, now=NOW, scheme="exposure", publications=True)
+    assert recommender_model.publications_of(model) == ["bad.example", "good.example"]
+    scores = recommender_model.score_documents(
+        [store.document("new")], store.embeddings(config.EMBED_KEY), model)
+    assert scores["new"] > 0.5
+
+
+def test_train_keeps_an_evaluation_set_out(store):
+    stock(store, [doc(f"r{i}", location="archive", reading_progress=1.0) for i in range(30)]
+          + [doc(f"i{i}", saved_at=iso(30)) for i in range(30)])
+    _, stats = recommender_model.train(store, now=NOW, exclude={"r0", "i0"})
+    assert stats["usable"] == 58
+
+
 # -- what gets embedded ------------------------------------------------------
 
 

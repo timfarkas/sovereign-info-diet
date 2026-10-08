@@ -100,3 +100,33 @@ LABEL_WEIGHTS = {
     "ignored": 0.3,        # stale feed item, never opened
 }
 MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold start
+
+# The "exposure" labelling scheme (KYRO-30). The `current` scheme above treats
+# every stale unopened feed item as a 0.3 negative, which was fine while he
+# triaged the feed (Feb-May 2026: ~90% of arrivals opened) and stopped being
+# fine when he stopped (Jun-Sep: ~3-5%) and then went false when ~300 RSS
+# items/day started arriving (Oct: ~0.1%). Most of those were never seen, so
+# "ignored" there means "never considered", not "not interested".
+# So: positives at full weight; each negative is scaled by how much of its
+# arrival block he organically opened -- a skip in a block where he opened 95 of
+# 100 is a hard negative, a skip in a block where he opened 3 says ~nothing.
+# Organic = never shortlisted: shortlist opens say nothing about the other 99.
+# Tim's proposal also gated blocks on >=10 opens; measured redundant with the
+# scaling (identical held-out AUC, KYRO-30) and left out.
+EXPOSURE_BLOCK = 100
+EXPOSURE_WEIGHTS = {
+    "rated_good": 2.0,
+    "rated_bad": 3.0,
+    "read": 0.5,
+    "saved": 0.3,          # favourited, or moved from the feed into `later`
+    "passed": 0.2,         # shortlisted, evicted unopened -- exposure 1 by construction
+    "bounced": 0.1,        # opened, not read past READ_WORDS  (x block exposure)
+    "ignored": 0.2,        # stale feed item, never opened     (x block exposure)
+}
+
+# Publication as a feature: a one-hot over site_name for sites with at least
+# this many labelled documents, plus one shared "other" column. Only safe with
+# the exposure labels -- with the `current` ones it learns "the Guardian is bad"
+# straight out of the October flood, which he never looked at.
+PUBLICATION_MIN_DOCS = 15
+

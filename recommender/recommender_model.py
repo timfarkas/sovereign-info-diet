@@ -81,8 +81,12 @@ def label_for(doc, evicted_unopened=False, now=None):
     return None
 
 
-def derive_labels(store, now=None):
+def derive_labels(store, now=None, scheme="current"):
     """{doc_id: (y, weight, reason)} across the whole corpus."""
+    if scheme == "exposure":
+        return exposure_labels(store, now=now)
+    if scheme != "current":
+        raise ValueError(f"unknown labelling scheme {scheme!r}")
     matured = _matured_evictions(store)
     labels = {}
     for doc in store.documents():
@@ -91,6 +95,86 @@ def derive_labels(store, now=None):
             continue
         y, reason = result
         labels[doc["id"]] = (y, config.LABEL_WEIGHTS[reason], reason)
+    return labels
+
+
+def exposure_blocks(documents, shortlisted):
+    """{doc_id: fraction of its arrival block he organically opened}.
+
+    The arrival stream is everything that came in through the feed, in saved_at
+    order, cut into blocks of EXPOSURE_BLOCK. Shortlisted documents belong to a
+    block but do not count towards its open rate: opening something because we
+    put it in front of him says nothing about whether he scanned the rest.
+    """
+    stream = sorted(
+        (d for d in documents
+         if d.get("saved_at")
+         and (d.get("location") == "feed" or d.get("category") in ("rss", "email"))),
+        key=lambda d: d["saved_at"],
+    )
+    exposure = {}
+    for start in range(0, len(stream), config.EXPOSURE_BLOCK):
+        block = stream[start:start + config.EXPOSURE_BLOCK]
+        organic = [d for d in block if d["id"] not in shortlisted]
+        rate = (sum(bool(d.get("first_opened_at")) for d in organic) / len(organic)
+                if organic else 0.0)
+        for d in block:
+            exposure[d["id"]] = rate
+    return exposure
+
+
+def _words_read(doc):
+    return (doc.get("reading_progress") or 0.0) * (doc.get("word_count") or 0)
+
+
+def _is_read(doc):
+    return (_words_read(doc) >= config.READ_WORDS
+            or (doc.get("reading_progress") or 0.0) >= config.READ_PROGRESS)
+
+
+def exposure_labels(store, now=None):
+    """The KYRO-30 scheme: {doc_id: (y, weight, reason)}. See config.EXPOSURE_WEIGHTS.
+
+    Positives keep their full weight. Negatives he could not have avoided seeing
+    (a shortlist pick he passed on) keep theirs; every other negative is scaled
+    by its block's exposure, so the October flood -- hundreds a day, almost none
+    opened -- contributes almost nothing instead of thousands of 0.3 negatives.
+    """
+    now = now or datetime.now(timezone.utc)
+    weights = config.EXPOSURE_WEIGHTS
+    documents = store.documents()
+    shortlisted = {e["doc_id"] for e in store.events() if e["action"] == "added"}
+    matured = _matured_evictions(store)
+    exposure = exposure_blocks(documents, shortlisted)
+    labels = {}
+    for doc in documents:
+        tags = _tags(doc)
+        opened = bool(doc.get("first_opened_at"))
+        if config.RATE_GOOD_TAG in tags:
+            labels[doc["id"]] = (1, weights["rated_good"], "rated_good")
+        elif config.RATE_BAD_TAG in tags:
+            labels[doc["id"]] = (0, weights["rated_bad"], "rated_bad")
+        elif _is_read(doc):
+            labels[doc["id"]] = (1, weights["read"], "read")
+        elif tags & {"favorite", "important"} or (
+                doc.get("location") == "later" and doc.get("category") in ("rss", "email")):
+            # `later` only counts for feed-born documents: a hand-saved article
+            # lives there by definition, and calling every one of those a
+            # positive would make the backlog pool impossible to rank.
+            labels[doc["id"]] = (1, weights["saved"], "saved")
+        elif doc["id"] in shortlisted:
+            if opened:
+                labels[doc["id"]] = (0, weights["bounced"], "bounced")
+            elif doc["id"] in matured:
+                labels[doc["id"]] = (0, weights["passed"], "passed")
+        elif doc["id"] in exposure:
+            seen = exposure[doc["id"]]
+            saved = _parse(doc.get("saved_at"))
+            if opened:
+                labels[doc["id"]] = (0, weights["bounced"] * seen, "bounced")
+            elif (doc.get("location") == "feed" and saved
+                  and saved < now - timedelta(days=config.FEED_STALE_DAYS) and seen > 0):
+                labels[doc["id"]] = (0, weights["ignored"] * seen, "ignored")
     return labels
 
 
@@ -113,34 +197,73 @@ def _matured_evictions(store):
     return matured
 
 
-def features(doc, vector):
-    """embedding + a couple of shape features. No age, ever -- see module docstring."""
+def site(doc):
+    """The publication, normalised just enough that 'the Guardian' is one site."""
+    return (doc.get("site_name") or "").strip().lower()
+
+
+def publication_vocabulary(docs):
+    """Sites common enough among labelled docs to earn their own column."""
+    counts = {}
+    for doc in docs:
+        name = site(doc)
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return sorted(n for n, c in counts.items() if c >= config.PUBLICATION_MIN_DOCS)
+
+
+def features(doc, vector, publications=()):
+    """embedding + a couple of shape features. No age, ever -- see module docstring.
+
+    With a publication vocabulary, also a one-hot over it plus a trailing
+    "other" column, so every document lights exactly one publication column.
+    """
     word_count = doc.get("word_count") or 0
     extras = [np.log1p(word_count)]
     extras += [1.0 if doc.get("category") == c else 0.0 for c in CATEGORIES]
+    if publications:
+        name = site(doc)
+        extras += [1.0 if name == p else 0.0 for p in publications]
+        extras.append(0.0 if name in publications else 1.0)
     return np.concatenate([vector, np.asarray(extras, dtype=np.float32)])
 
 
-def build_matrix(docs, embeddings):
+def feature_count(publications=()):
+    return config.EMBED_DIM + 1 + len(CATEGORIES) + (len(publications) + 1 if publications else 0)
+
+
+def build_matrix(docs, embeddings, publications=()):
     """(X, kept_docs) for every doc that has an embedding."""
     rows, kept = [], []
     for doc in docs:
         vector = embeddings.get(doc["id"])
         if vector is None:
             continue
-        rows.append(features(doc, vector))
+        rows.append(features(doc, vector, publications))
         kept.append(doc)
     if not rows:
-        return np.zeros((0, config.EMBED_DIM + 1 + len(CATEGORIES)), dtype=np.float32), []
+        return np.zeros((0, feature_count(publications)), dtype=np.float32), []
     return np.vstack(rows), kept
 
 
-def train(store, now=None):
-    """Fit on everything labelled. Returns (model, stats) or (None, stats)."""
-    labels = derive_labels(store, now=now)
+def publications_of(model):
+    """The vocabulary a model was fitted with; empty for one without the feature."""
+    return list(getattr(model, "publications_", ()))
+
+
+def train(store, now=None, scheme="current", publications=False, exclude=()):
+    """Fit on everything labelled. Returns (model, stats) or (None, stats).
+
+    `scheme` names the labelling scheme, `publications` switches the publication one-hot
+    on, `exclude` holds doc ids to keep out of training (an evaluation set).
+    The fitted vocabulary rides on the model as `publications_`, so scoring and
+    attribution always build exactly the columns the model was fitted on.
+    """
+    labels = derive_labels(store, now=now, scheme=scheme)
     embeddings = store.embeddings(config.EMBED_KEY)
-    docs = [d for d in store.documents() if d["id"] in labels]
-    X, kept = build_matrix(docs, embeddings)
+    docs = [d for d in store.documents() if d["id"] in labels and d["id"] not in exclude]
+    vocabulary = publication_vocabulary(docs) if publications else []
+    X, kept = build_matrix(docs, embeddings, vocabulary)
     y = np.array([labels[d["id"]][0] for d in kept])
     weights = np.array([labels[d["id"]][1] for d in kept])
     stats = {
@@ -153,6 +276,7 @@ def train(store, now=None):
         return None, stats
     model = LogisticRegression(max_iter=2000, C=1.0, class_weight="balanced")
     model.fit(X, y, sample_weight=weights)
+    model.publications_ = vocabulary
     return model, stats
 
 
@@ -181,7 +305,7 @@ def taste_vector(store):
 
 def score_documents(docs, embeddings, model=None, taste=None):
     """{doc_id: score in 0..1}. Uses the model when we have one, taste otherwise."""
-    X, kept = build_matrix(docs, embeddings)
+    X, kept = build_matrix(docs, embeddings, publications_of(model))
     if not kept:
         return {}
     if model is not None:
