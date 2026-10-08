@@ -15,6 +15,9 @@ out of every ranker's training data, and labelled by one neutral rule:
             filtered by a ranker, so it can only separate big differences.
   triage -- every 5th arrival block in which he organically opened >= half, i.e.
             periods when he was demonstrably working through the feed.
+            Bulk-cleared documents are left out: a blind "mark all seen" is
+            not a no (KYRO-30: they were 82% of this set's negatives, and
+            word count alone scored 0.66 on them by length, not taste).
 
 Neutral label: positive when rated good, favourited, or >= OPENED_WORDS
 actually read; negative otherwise, with rate:bad overriding.
@@ -65,7 +68,9 @@ def eval_sets(store, documents=None):
     triage_blocks = [b for b in recommender_model.arrival_blocks(documents)
                      if recommender_model.block_exposure(b, shortlisted) >= TRIAGE_EXPOSURE]
     held = triage_blocks[::TRIAGE_EVERY]
-    triage = {d["id"]: neutral_label(d) for b in held for d in b if d["id"] not in shortlisted}
+    cleared = recommender_model.bulk_cleared(documents)
+    triage = {d["id"]: neutral_label(d) for b in held for d in b
+              if d["id"] not in shortlisted and d["id"] not in cleared}
     excluded = set(shown) | {d["id"] for b in held for d in b}
     return {"shown": shown, "triage": triage}, excluded
 

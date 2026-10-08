@@ -13,6 +13,7 @@ time, not in the model.
 """
 
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -144,6 +145,19 @@ def _is_read(doc):
             or (doc.get("reading_progress") or 0.0) >= config.READ_PROGRESS)
 
 
+def _read_at_all(doc):
+    return (_words_read(doc) >= config.OPENED_WORDS
+            or (doc.get("reading_progress") or 0.0) >= config.MIN_READ_PROGRESS)
+
+
+def bulk_cleared(documents):
+    """Ids first opened in a minute with >= BULK_CLEAR_OPENS opens: a feed clear."""
+    minute = lambda d: d["first_opened_at"][:16]
+    opened = [d for d in documents if d.get("first_opened_at")]
+    per_minute = Counter(map(minute, opened))
+    return {d["id"] for d in opened if per_minute[minute(d)] >= config.BULK_CLEAR_OPENS}
+
+
 def exposure_labels(store, now=None):
     """The KYRO-30 scheme: {doc_id: (y, weight, reason)}. See config.EXPOSURE_WEIGHTS.
 
@@ -158,6 +172,7 @@ def exposure_labels(store, now=None):
     shortlisted = {e["doc_id"] for e in store.events() if e["action"] == "added"}
     matured = _matured_evictions(store)
     exposure = exposure_blocks(documents, shortlisted)
+    cleared = bulk_cleared(documents)
     labels = {}
     for doc in documents:
         tags = _tags(doc)
@@ -166,7 +181,7 @@ def exposure_labels(store, now=None):
             labels[doc["id"]] = (1, weights["rated_good"], "rated_good")
         elif config.RATE_BAD_TAG in tags:
             labels[doc["id"]] = (0, weights["rated_bad"], "rated_bad")
-        elif _is_read(doc):
+        elif _read_at_all(doc):
             labels[doc["id"]] = (1, weights["read"], "read")
         elif tags & {"favorite", "important"} or (
                 doc.get("location") == "later" and doc.get("category") in ("rss", "email")):
@@ -174,6 +189,8 @@ def exposure_labels(store, now=None):
             # lives there by definition, and calling every one of those a
             # positive would make the backlog pool impossible to rank.
             labels[doc["id"]] = (1, weights["saved"], "saved")
+        elif doc["id"] in cleared:
+            continue
         elif doc["id"] in shortlisted:
             if opened:
                 labels[doc["id"]] = (0, weights["bounced"], "bounced")

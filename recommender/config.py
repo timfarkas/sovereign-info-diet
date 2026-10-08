@@ -108,7 +108,8 @@ MIN_LABELS_TO_TRAIN = 40       # below this, fall back to the taste-vector cold 
 
 # The "exposure" labelling scheme (KYRO-30). The `current` scheme above treats
 # every stale unopened feed item as a 0.3 negative, which was fine while he
-# triaged the feed (Feb-May 2026: ~90% of arrivals opened) and stopped being
+# cleared the feed (Feb-May 2026: ~90% of arrivals opened, though mostly by
+# bulk "mark all seen" -- see BULK_CLEAR_OPENS) and stopped being
 # fine when he stopped (Jun-Sep: ~3-5%) and then went false when ~300 RSS
 # items/day started arriving (Oct: ~0.1%). Most of those were never seen, so
 # "ignored" there means "never considered", not "not interested".
@@ -125,9 +126,19 @@ EXPOSURE_WEIGHTS = {
     "read": 0.5,
     "saved": 0.3,          # favourited, or moved from the feed into `later`
     "passed": 0.2,         # shortlisted, evicted unopened -- exposure 1 by construction
-    "bounced": 0.1,        # opened, not read past READ_WORDS  (x block exposure)
+    "bounced": 0.1,        # opened, read under MIN_READ           (x block exposure)
     "ignored": 0.2,        # stale feed item, never opened     (x block exposure)
 }
+# "Read" for the exposure scheme is any real reading: >= OPENED_WORDS words, or
+# >= MIN_READ_PROGRESS of a short post (Tim, KYRO-30). On the bulk-free held-out
+# set this beat the READ_WORDS/READ_PROGRESS bar (AUC 0.773 vs 0.730). Grading
+# positives by sqrt(words read) / fraction read was tried and did not help.
+MIN_READ_PROGRESS = 0.10
+# Feb-Jun 2026 he cleared the feed with "mark all seen", mostly without reading
+# the titles: ~5,900 of ~6,900 feed opens landed in bursts of >= 20 in one
+# minute (up to 507 in one second). Such an open is not a bounce, so it gets no
+# label at all.
+BULK_CLEAR_OPENS = 20
 
 # Publication as a feature: a one-hot over site_name for sites with at least
 # this many labelled documents, plus one shared "other" column. Only safe with

@@ -619,3 +619,29 @@ def test_a_dry_run_writes_nothing(store, tmp_path, monkeypatch):
     page = tmp_path / "html" / html_status_config.RECOMMENDER_PAGE / "index.html"
     assert page.exists()
     assert "dry run" in page.read_text()
+
+
+def test_a_bulk_clear_is_not_a_bounce(store, monkeypatch):
+    """A "mark all seen" burst opens everything at once; he never looked at most of it."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 100)
+    burst = [doc(f"c{i}", saved_at=iso(40), first_opened_at="2026-05-01T10:00:0%dZ" % (i % 10))
+             for i in range(config.BULK_CLEAR_OPENS)]
+    burst[0]["tags"] = {config.RATE_BAD_TAG: {}}
+    stock(store, burst + [doc("alone", saved_at=iso(40), first_opened_at=iso(39))])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert "c1" not in labels
+    assert labels["c0"][2] == "rated_bad"        # an explicit rating still counts
+    assert labels["alone"][2] == "bounced"
+
+
+@pytest.mark.parametrize("words, progress, read", [
+    (5000, 0.02, True),     # 100 words into a long post
+    (5000, 0.01, False),
+    (300, 0.10, True),      # 10% of a short post
+    (300, 0.09, False),
+])
+def test_any_real_reading_is_a_positive(store, words, progress, read):
+    stock(store, [doc("d", saved_at=iso(20), first_opened_at=iso(19),
+                      word_count=words, reading_progress=progress)])
+    label = recommender_model.derive_labels(store, now=NOW, scheme="exposure")["d"]
+    assert label[2] == ("read" if read else "bounced")

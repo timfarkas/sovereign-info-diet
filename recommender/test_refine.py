@@ -86,6 +86,19 @@ def test_only_blocks_he_was_actually_scanning_are_triage(store, monkeypatch):
     assert all(int(i[1:].split("d")[0]) % 2 == 0 for i in sets["triage"])
 
 
+def test_a_bulk_clear_is_not_a_triage_negative(store, monkeypatch):
+    """He cleared the feed blind; scoring a ranker on those 'no's rewards length, not taste."""
+    docs = corpus(monkeypatch)
+    for d in docs:
+        if d["id"] in ("b0d5", "b0d6"):
+            d["first_opened_at"] = "2026-03-01T09:00:00+00:00"
+    monkeypatch.setattr(config, "BULK_CLEAR_OPENS", 2)
+    stock(store, docs)
+    sets, _ = recommender_refine.eval_sets(store)
+    assert sets["triage"]["b0d4"] == 0
+    assert "b0d5" not in sets["triage"] and "b0d6" not in sets["triage"]
+
+
 def test_a_shortlist_pick_with_no_outcome_yet_is_not_judged(store, monkeypatch):
     stock(store, corpus(monkeypatch))
     store.log_event("b1d1", "added", "2026-09-24")
