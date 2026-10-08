@@ -230,7 +230,7 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
             if ranker is None and fallback is None:
                 continue
             own = vectors[recommender_model.embedding_of(ranker)] if ranker is not None else embeddings
-            scores = recommender_model.score_documents(pool, own, ranker, fallback)
+            scores = recommender_model.score_documents(pool, own, ranker, fallback, now=now)
             ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
             teams.append({"slot": slot, "scores": scores, "ranked": ranked,
                           "rank_of": {d["id"]: i + 1 for i, d in enumerate(ranked)}})

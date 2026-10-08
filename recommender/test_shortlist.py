@@ -779,3 +779,67 @@ def test_the_damped_draw_never_repeats_and_stops_at_the_pool():
     drawn = shortlist_job.damped_sample(pool, 3, pool, random.Random(1))
     assert len({d["id"] for d in drawn}) == 3
     assert len(shortlist_job.damped_sample(pool, 9, pool, random.Random(1))) == 5
+
+
+# -- age at exposure (KYRO-30) ---------------------------------------------------
+
+
+def ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_exposure_age_is_the_first_look_not_the_age_now(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 100)
+    stock(store, [
+        doc("opened", saved_at=ago(30), first_opened_at=ago(27)),       # opened 3 days in
+        doc("shown", saved_at=ago(10)),                                 # shortlisted today
+        doc("hand", category="article", location="later", saved_at=ago(50)),  # never looked at
+    ], embed=False)
+    store.log_event("shown", "added", "c")
+    ages = recommender_model.exposure_ages(store)
+    assert ages["opened"] == pytest.approx(3, abs=0.01)
+    assert ages["shown"] == pytest.approx(10, abs=0.01)
+    assert ages["hand"] == pytest.approx(np.median([ages["opened"], ages["shown"]]), abs=0.01)
+
+
+def test_an_unopened_item_is_dated_by_the_scan_of_its_block(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 3)
+    stock(store, [doc("a", saved_at=ago(9), first_opened_at=ago(8)),
+                  doc("b", saved_at=ago(9), first_opened_at=ago(4)),
+                  doc("skipped", saved_at=ago(9))], embed=False)
+    # he next went through the block a day after it arrived
+    assert recommender_model.exposure_ages(store)["skipped"] == pytest.approx(1, abs=0.01)
+
+
+def test_an_age_aware_ranker_learns_that_stale_is_worse(store, monkeypatch):
+    """Same content; read when fresh, passed on when a week old."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 1000)
+    # opens spread out: 20 in one minute would be a bulk clear
+    docs = ([doc(f"fresh{i}", saved_at=ago(40 + i / 100), first_opened_at=ago(40 + i / 100),
+                 reading_progress=0.9)
+             for i in range(30)]
+            + [doc(f"stale{i}", saved_at=ago(47), first_opened_at=ago(40 + i / 100),
+                   reading_progress=0.0,
+                   word_count=800) for i in range(30)])
+    stock(store, docs)
+    same = store.embeddings(config.EMBED_KEY)["fresh0"]
+    store.save_embeddings(config.EMBED_KEY, {d["id"]: same for d in docs})
+    model, _ = recommender_model.train(store, scheme="exposure", age=True)
+    candidates = [doc("today", saved_at=ago(0)), doc("lastweek", saved_at=ago(7))]
+    store.save_embeddings(config.EMBED_KEY, {"today": same, "lastweek": same})
+    scores = recommender_model.score_documents(candidates, store.embeddings(config.EMBED_KEY), model)
+    assert scores["today"] > scores["lastweek"]
+
+
+def test_the_age_term_keeps_the_attribution_exact(store, monkeypatch):
+    import shortlist_stats
+    test_an_age_aware_ranker_learns_that_stale_is_worse(store, monkeypatch)
+    model, _ = recommender_model.train(store, scheme="exposure", age=True)
+    embeddings = store.embeddings(config.EMBED_KEY)
+    baseline = shortlist_stats.baseline_features(
+        store.documents(), embeddings, ages=recommender_model.exposure_ages(store))
+    old = store.document("lastweek") or doc("lastweek", saved_at=ago(7))
+    attr = shortlist_stats.attribution(old, embeddings["lastweek"], model, baseline)
+    score = recommender_model.score_documents([old], embeddings, model)["lastweek"]
+    assert attr["probability"] == pytest.approx(score, abs=1e-6)
+    assert attr["contributions"]["age"] < 0

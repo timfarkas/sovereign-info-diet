@@ -126,7 +126,10 @@ with the digest). Local *embeddings* fit comfortably. Keep any single job under
 - **two rankers, interleaved** (since KYRO-30): `config.RANKERS` holds a
   `control` and a `candidate`. Since 2026-10-09 both use exposure-weighted
   labels + a site_name one-hot; the control is fitted on the mistral full-text
-  vectors, the candidate on bge -- so the live arms test the full text. The
+  vectors, the candidate on bge -- so the live arms test the full text. Both
+  also take age at exposure (see Invariants).
+- **random feed draw** is damped against floods: a site with n posts in the
+  pool draws with total mass log(1+n) (`config.RANDOM_PUBLICATION_MASS`). The
   pre-KYRO-30 ranker (`current` labels, bge) is an offline row only. Each
   model carries its vector key as `embedding_`. Each pool's ranked slots are
   team-drafted between them; candidate picks carry slot `<pool>-cand`. Verdict lives on
@@ -206,9 +209,13 @@ weight is still negative (-1.8), but that comes from 9 explicit `rate:bad`.
 
 ## Invariants — things that will silently break if changed
 
-- **Age must never become a model feature.** Old → archived → read, so age
-  predicts the label almost perfectly and yields a model that ranks by "is old"
-  while scoring beautifully. Recency gates candidacy instead. There is a test.
+- **Age as of now must never become a model feature.** Old → archived → read, so
+  today's age predicts the label almost perfectly and yields a model that ranks
+  by "is old" while scoring beautifully. There is a test. What rankers do use
+  (since 2026-10-09, `"age": True`) is *age at exposure*: days from arrival to
+  his first look (first open, first shortlisting, or the next organic open in
+  its arrival block; median if none), which is frozen at the decision. At
+  scoring time it is now − saved_at. Learned ≈ −0.22 per log-day.
 - **Each random arm must be drawn from the same pool as the ranked picks it is
   compared against.** An earlier version drew random from `later` while ranking
   `feed` and called it unbiased; it was not.

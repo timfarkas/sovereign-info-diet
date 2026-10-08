@@ -6,10 +6,15 @@ hundreds-to-thousands of labels, a linear head on good embeddings is about as
 much model as the data can honestly support, and anything deeper would overfit
 and then hide it behind a flattering training score.
 
-No feature here may encode *age*. Old documents are archived and archived means
-read, so age leaks the label almost perfectly and would produce a model that
-ranks by "is old" while looking excellent on paper. Recency belongs at selection
-time, not in the model.
+No feature here may encode *age as of now*. Old documents are archived and
+archived means read, so today's age leaks the label almost perfectly and would
+produce a model that ranks by "is old" while looking excellent on paper.
+
+What a ranker may opt into ("age" in its spec, KYRO-30) is *age at exposure*:
+how old a document was when he first looked at it -- see exposure_ages(). That
+is fixed at the moment of the decision and does not grow while the label
+settles, so it carries "a digest is stale after a week" without the leak. At
+scoring time "exposure" is now, so a candidate's age is now - saved_at.
 """
 
 import json
@@ -241,11 +246,12 @@ def publication_vocabulary(docs):
     return sorted(n for n, c in counts.items() if c >= config.PUBLICATION_MIN_DOCS)
 
 
-def features(doc, vector, publications=()):
-    """embedding + a couple of shape features. No age, ever -- see module docstring.
+def features(doc, vector, publications=(), age_days=None):
+    """embedding + a couple of shape features. No age as of now -- see module docstring.
 
     With a publication vocabulary, also a one-hot over it plus a trailing
     "other" column, so every document lights exactly one publication column.
+    With `age_days` (age at exposure), a trailing log1p(age_days) column.
     """
     word_count = doc.get("word_count") or 0
     extras = [np.log1p(word_count)]
@@ -254,24 +260,28 @@ def features(doc, vector, publications=()):
         name = site(doc)
         extras += [1.0 if name == p else 0.0 for p in publications]
         extras.append(0.0 if name in publications else 1.0)
+    if age_days is not None:
+        extras.append(np.log1p(age_days))
     return np.concatenate([vector, np.asarray(extras, dtype=np.float32)])
 
 
-def feature_count(publications=(), dim=config.EMBED_DIM):
-    return dim + 1 + len(CATEGORIES) + (len(publications) + 1 if publications else 0)
+def feature_count(publications=(), dim=config.EMBED_DIM, age=False):
+    return dim + 1 + len(CATEGORIES) + (len(publications) + 1 if publications else 0) + age
 
 
-def build_matrix(docs, embeddings, publications=()):
-    """(X, kept_docs) for every doc that has an embedding."""
+def build_matrix(docs, embeddings, publications=(), ages=None):
+    """(X, kept_docs) for every doc that has an embedding. `ages` must cover them all."""
     rows, kept = [], []
     for doc in docs:
         vector = embeddings.get(doc["id"])
         if vector is None:
             continue
-        rows.append(features(doc, vector, publications))
+        rows.append(features(doc, vector, publications,
+                             ages[doc["id"]] if ages is not None else None))
         kept.append(doc)
     if not rows:
-        return np.zeros((0, feature_count(publications)), dtype=np.float32), []
+        return np.zeros((0, feature_count(publications, age=ages is not None)),
+                        dtype=np.float32), []
     return np.vstack(rows), kept
 
 
@@ -280,26 +290,79 @@ def publications_of(model):
     return list(getattr(model, "publications_", ()))
 
 
+def _days(later, earlier):
+    return max(0.0, (later - earlier).total_seconds() / 86400)
+
+
+def exposure_ages(store, documents=None):
+    """{doc_id: age in days when he first looked at it}, for what we can date.
+
+    The first look is the earliest of: his first open (unless a bulk clear), the
+    first time we shortlisted it, and the next scan of its arrival block -- the
+    first organic open in that block after it arrived, i.e. the next time he went
+    through that batch. Documents with no such look (hand-saved and never opened,
+    or arriving after his last open in their block) get the median age of those
+    that have one: no information either way, and no labelled row is lost --
+    among them, measured 2026-10-09, 7 of the 55 rate:good ratings.
+    """
+    documents = documents if documents is not None else store.documents()
+    shown = {}
+    for e in store.events():
+        if e["action"] == "added":
+            shown.setdefault(e["doc_id"], _parse(e["created_at"]))
+    cleared = bulk_cleared(documents)
+    scan = {}
+    for block in arrival_blocks(documents):
+        opens = sorted(_parse(d["first_opened_at"]) for d in block
+                       if d.get("first_opened_at") and d["id"] not in shown
+                       and d["id"] not in cleared)
+        for d in block:
+            saved = _parse(d.get("saved_at"))
+            after = [t for t in opens if saved and t >= saved]
+            if after:
+                scan[d["id"]] = after[0]
+    ages = {}
+    for d in documents:
+        saved = _parse(d.get("saved_at"))
+        looks = [t for t in (
+            _parse(d["first_opened_at"]) if d.get("first_opened_at") and d["id"] not in cleared else None,
+            shown.get(d["id"]), scan.get(d["id"])) if t is not None and saved and t >= saved]
+        if saved and looks:
+            ages[d["id"]] = _days(min(looks), saved)
+    typical = float(np.median(list(ages.values()))) if ages else 0.0
+    return {d["id"]: ages.get(d["id"], typical) for d in documents}
+
+
+def live_ages(docs, now=None):
+    """{doc_id: age in days now}: the exposure age of a candidate shown tonight."""
+    now = now or datetime.now(timezone.utc)
+    return {d["id"]: _days(now, _parse(d.get("saved_at")) or now) for d in docs}
+
+
 def embedding_of(model):
     """The store key of the vectors a model was fitted on."""
     return getattr(model, "embedding_", config.EMBED_KEY)
 
 
-def train(store, now=None, scheme="current", publications=False, exclude=(), embedding=None):
+def train(store, now=None, scheme="current", publications=False, exclude=(), embedding=None,
+          age=False):
     """Fit on everything labelled. Returns (model, stats) or (None, stats).
 
     `scheme` names the labelling scheme, `publications` switches the publication one-hot
     on, `exclude` holds doc ids to keep out of training (an evaluation set),
-    `embedding` names the store's vectors to fit on (default config.EMBED_KEY).
-    The fitted vocabulary rides on the model as `publications_` and the vectors'
-    key as `embedding_`, so scoring and attribution always build exactly the
-    columns the model was fitted on.
+    `embedding` names the store's vectors to fit on (default config.EMBED_KEY),
+    `age` adds age at exposure (and drops documents it cannot date).
+    The fitted vocabulary rides on the model as `publications_`, the vectors'
+    key as `embedding_` and the age switch as `age_`, so scoring and attribution
+    always build exactly the columns the model was fitted on.
     """
     labels = derive_labels(store, now=now, scheme=scheme)
     embeddings = store.embeddings(embedding or config.EMBED_KEY)
-    docs = [d for d in store.documents() if d["id"] in labels and d["id"] not in exclude]
+    documents = store.documents()
+    docs = [d for d in documents if d["id"] in labels and d["id"] not in exclude]
     vocabulary = publication_vocabulary(docs) if publications else []
-    X, kept = build_matrix(docs, embeddings, vocabulary)
+    X, kept = build_matrix(docs, embeddings, vocabulary,
+                           exposure_ages(store, documents) if age else None)
     y = np.array([labels[d["id"]][0] for d in kept])
     weights = np.array([labels[d["id"]][1] for d in kept])
     stats = {
@@ -314,6 +377,7 @@ def train(store, now=None, scheme="current", publications=False, exclude=(), emb
     model.fit(X, y, sample_weight=weights)
     model.publications_ = vocabulary
     model.embedding_ = embedding or config.EMBED_KEY
+    model.age_ = age
     return model, stats
 
 
@@ -340,9 +404,15 @@ def taste_vector(store):
     return mean / norm if norm else None
 
 
-def score_documents(docs, embeddings, model=None, taste=None):
-    """{doc_id: score in 0..1}. Uses the model when we have one, taste otherwise."""
-    X, kept = build_matrix(docs, embeddings, publications_of(model))
+def score_documents(docs, embeddings, model=None, taste=None, ages=None, now=None):
+    """{doc_id: score in 0..1}. Uses the model when we have one, taste otherwise.
+
+    An age-aware model reads `ages` (exposure ages, for evaluation) or, by
+    default, each document's age now -- the age it is being shown at."""
+    if getattr(model, "age_", False) and ages is None:
+        ages = live_ages(docs, now)
+    X, kept = build_matrix(docs, embeddings, publications_of(model),
+                           ages if getattr(model, "age_", False) else None)
     if not kept:
         return {}
     if model is not None:

@@ -386,6 +386,7 @@ CONTRIBUTION_LABELS = {
     "length": "length (log words)",
     "format": "format (article/rss/email/...)",
     "publication": "publication",
+    "age": "age (days since it arrived)",
 }
 
 EVIDENCE_LABELS = {

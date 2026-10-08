@@ -182,9 +182,14 @@ MISTRAL_MAX_WORDS_PER_RUN = 5_000_000
 # wash on opens but ahead on rate:bad and fraction read, with too few ratings to
 # be sure -- so the candidate is the same ranker on bge, and the live arms say
 # whether the full text earns its keep.
+# 2026-10-09 (Tim): both gained "age" -- age at exposure as a feature, so a
+# ranker can learn that a week-old digest is not today's (see the module
+# docstring of recommender_model). Both, so the arms still differ only in the
+# vectors. Learned -0.22 per log-day: a 6-day-old document loses ~0.44 logit.
 RANKERS = {
-    "control": {"scheme": "exposure", "publications": True, "embedding": MISTRAL_EMBED_KEY},
-    "candidate": {"scheme": "exposure", "publications": True},
+    "control": {"scheme": "exposure", "publications": True, "embedding": MISTRAL_EMBED_KEY,
+                "age": True},
+    "candidate": {"scheme": "exposure", "publications": True, "age": True},
 }
 # Extra rows for the refinement page's offline table only -- never drafted into
 # the live slate. A row whose vectors are not in the store is skipped.

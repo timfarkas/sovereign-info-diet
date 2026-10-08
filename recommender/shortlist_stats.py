@@ -191,12 +191,14 @@ def evidence(doc_id, embeddings, labelled, k=3):
     return out
 
 
-def baseline_features(docs, embeddings, publications=()):
+def baseline_features(docs, embeddings, publications=(), ages=None):
     """The average document, in feature space. The origin the split is taken about.
 
     Attributing against zero would say "long documents score high" even when
     every candidate is long; attributing against the mean says what makes THIS
     document different from the rest of the corpus, which is the question.
+    With `ages` (exposure ages) the age column's origin is the age he usually
+    sees things at, so a week-old candidate reads as "older than usual".
     """
     if not docs or not embeddings:
         return None
@@ -204,18 +206,20 @@ def baseline_features(docs, embeddings, publications=()):
     if not vectors:
         return None
     mean_vector = np.mean(np.vstack(vectors), axis=0)
+    rows = docs
     extras = np.mean(
-        np.vstack([recommender_model.features(d, np.zeros(0, dtype=np.float32), publications)
-                   for d in docs]),
+        np.vstack([recommender_model.features(d, np.zeros(0, dtype=np.float32), publications,
+                                              ages[d["id"]] if ages is not None else None)
+                   for d in rows]),
         axis=0,
     )
     return np.concatenate([mean_vector, extras])
 
 
-GROUPS = ("topic", "length", "format")     # + "publication" for a model that has it
+GROUPS = ("topic", "length", "format")     # + "publication" / "age" for a model that has it
 
 
-def attribution(doc, vector, model, baseline):
+def attribution(doc, vector, model, baseline, now=None):
     """Split the logit into topic / length / format (/ publication), around the
     average document.
 
@@ -225,7 +229,10 @@ def attribution(doc, vector, model, baseline):
     if model is None or baseline is None or vector is None:
         return None
     publications = recommender_model.publications_of(model)
-    x = recommender_model.features(doc, vector, publications)
+    age = getattr(model, "age_", False)
+    x = recommender_model.features(
+        doc, vector, publications,
+        recommender_model.live_ages([doc], now)[doc["id"]] if age else None)
     w = model.coef_[0]
     if len(w) != len(x) or len(baseline) != len(x):
         return None
@@ -238,7 +245,9 @@ def attribution(doc, vector, model, baseline):
         "format": float(delta[dim + 1:formats].sum()),
     }
     if publications:
-        contributions["publication"] = float(delta[formats:].sum())
+        contributions["publication"] = float(delta[formats:len(delta) - age].sum())
+    if age:
+        contributions["age"] = float(delta[-1])
     baseline_logit = float(model.intercept_[0] + w @ baseline)
     logit = baseline_logit + sum(contributions.values())
     return {
@@ -314,9 +323,12 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         if m is not None:
             key = recommender_model.embedding_of(m)
             own[key] = embeddings if key == config.EMBED_KEY else own.get(key) or store.embeddings(key)
+    ages = (recommender_model.exposure_ages(store, documents)
+            if any(getattr(m, "age_", False) for m in (model, candidate)) else None)
     baselines = {
         id(m): baseline_features(documents, own[recommender_model.embedding_of(m)],
-                                 recommender_model.publications_of(m))
+                                 recommender_model.publications_of(m),
+                                 ages if getattr(m, "age_", False) else None)
         for m in (model, candidate) if m is not None
     }
 

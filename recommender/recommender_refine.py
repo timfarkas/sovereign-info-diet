@@ -91,9 +91,10 @@ def auc_with_interval(y, scores, seed=0):
             "n": int(len(y)), "positives": int(y.sum())}
 
 
-def score_set(model, labels, by_id, embeddings):
+def score_set(model, labels, by_id, embeddings, ages):
+    """Age-aware models are scored at the age he actually saw each document."""
     docs = [by_id[i] for i in labels if i in by_id and i in embeddings]
-    scores = recommender_model.score_documents(docs, embeddings, model)
+    scores = recommender_model.score_documents(docs, embeddings, model, ages=ages)
     return [labels[d["id"]] for d in docs], [scores[d["id"]] for d in docs]
 
 
@@ -112,7 +113,7 @@ def top_fresh(store, models, documents, vectors, k=10, now=None):
         if model is None:
             continue
         scores = recommender_model.score_documents(
-            pool, vectors[recommender_model.embedding_of(model)], model)
+            pool, vectors[recommender_model.embedding_of(model)], model, now=now)
         ranked = sorted(pool, key=lambda d: -scores[d["id"]])[:k]
         out[name] = [{"id": d["id"], "title": (d.get("title") or d["id"])[:100],
                       "site_name": d.get("site_name"), "word_count": d.get("word_count"),
@@ -127,6 +128,7 @@ def compare(store, rankers=None, now=None):
     by_id = {d["id"]: d for d in documents}
     vectors = {}
     sets, excluded = eval_sets(store, documents)
+    ages = recommender_model.exposure_ages(store, documents)
 
     results, models = {}, {}
     for name, spec in rankers.items():
@@ -145,7 +147,7 @@ def compare(store, rankers=None, now=None):
             if model is None:
                 entry[set_name] = None
                 continue
-            y, scores = score_set(model, labels, by_id, embeddings)
+            y, scores = score_set(model, labels, by_id, embeddings, ages)
             entry[set_name] = auc_with_interval(y, scores)
         results[name] = entry
 
