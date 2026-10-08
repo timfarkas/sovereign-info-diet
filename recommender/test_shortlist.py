@@ -474,12 +474,13 @@ def test_ranked_picks_skip_near_duplicates(store):
 
 def test_the_random_arm_is_not_deduplicated(store):
     """Skipping duplicates there would stop it being a uniform draw."""
-    store.upsert_documents([doc(f"dupe{i}") for i in range(4)])
+    store.upsert_documents([doc(f"dupe{i}") for i in range(6)])
     same = np.ones(config.EMBED_DIM, dtype=np.float32)
     same /= np.linalg.norm(same)
-    store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(4)})
+    store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(6)})
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
-    assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == 1
+    assert sum(1 for _, slot, _ in chosen if slot == "feed") == 1
+    assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == config.FEED_RANDOM_SLOTS
 
 
 def test_short_reads_are_guaranteed_slots(store):
@@ -500,6 +501,64 @@ def test_the_quota_is_a_floor_not_a_cap(store):
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     ranked = [d for d, slot, _ in chosen if slot == "feed"]
     assert len(ranked) == config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
+
+
+class AxisModel:
+    """A stand-in ranker that likes whatever points along one embedding axis."""
+
+    def __init__(self, axis):
+        self.axis = axis
+
+    def predict_proba(self, X):
+        p = 1 / (1 + np.exp(-10 * X[:, self.axis]))
+        return np.column_stack([1 - p, p])
+
+
+def two_camps(store, n=12):
+    """Feed docs a0.. point along axis 0, b0.. along axis 1; same for `later`."""
+    docs, vectors = [], {}
+    for pool, extra in (("", {}), ("l", {"location": "later", "saved_at": iso(400)})):
+        for camp, axis in (("a", 0), ("b", 1)):
+            for i in range(n):
+                d = doc(f"{pool}{camp}{i}", **extra)
+                v = np.zeros(config.EMBED_DIM, dtype=np.float32)
+                v[axis] = 1.0
+                v[2 + i + (n if pool else 0) + (2 * n if camp == "b" else 0)] = 0.8
+                vectors[d["id"]] = v / np.linalg.norm(v)
+                docs.append(d)
+    store.upsert_documents(docs)
+    store.save_embeddings(config.EMBED_KEY, vectors)
+
+
+def test_interleaving_splits_the_ranked_slots_evenly(store):
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(1))
+    slots = [slot for _, slot, _ in chosen]
+    ranked_feed = config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
+    ranked_later = config.LATER_SLOTS - config.LATER_RANDOM_SLOTS
+    assert slots.count("feed") == slots.count("feed-cand") == ranked_feed // 2
+    assert slots.count("later") + slots.count("later-cand") == ranked_later
+    assert abs(slots.count("later") - slots.count("later-cand")) <= 1
+    assert slots.count("feed-random") == config.FEED_RANDOM_SLOTS
+    assert len(chosen) == config.SHORTLIST_SIZE
+
+
+def test_each_ranker_fills_its_slots_with_its_own_favourites(store):
+    """Otherwise the arm comparison is measuring the draft, not the rankers."""
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(1))
+    assert all(d["id"].lstrip("l").startswith("a") for d, s, _ in chosen if s in ("feed", "later"))
+    assert all(d["id"].lstrip("l").startswith("b") for d, s, _ in chosen
+               if s in ("feed-cand", "later-cand"))
+
+
+def test_two_rankers_that_agree_never_pick_the_same_document_twice(store):
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(0))
+    ids = [d["id"] for d, _, _ in chosen]
+    assert len(ids) == len(set(ids))
+    assert [s for _, s, _ in chosen].count("feed-cand") == \
+        (config.FEED_SLOTS - config.FEED_RANDOM_SLOTS) // 2
 
 
 def test_pick_skips_stale_feed_items(store):

@@ -44,15 +44,20 @@ SHORTLIST_TAG = "shortlist"
 RATE_GOOD_TAG = "rate:good"
 RATE_BAD_TAG = "rate:bad"
 
-# Shape of a cycle: two pools, each with its own unranked random pick.
-#   feed  -- 7 slots from the fresh firehose, 1 of them random
+# Shape of a cycle: two pools, each with its own unranked random picks.
+#   feed  -- 9 slots from the fresh firehose, 3 of them random
 #   later -- 3 slots resurfaced from the backlog, 1 of them random
+# The ranked slots of each pool are split between the two RANKERS below by
+# team-draft interleaving, so each ranker fills half of them. Three random feed
+# picks a night instead of one (KYRO-30): the random arm is both the yardstick
+# and the only unbiased training signal on the new feeds, and at one a night
+# it took two weeks to collect fifteen.
 # The random pick in each pool is the measurement arm, and it has to come from
 # the SAME pool as the ranked picks it is compared against: `later` items differ
 # from fresh feed by age and by having already survived a selection step, so a
 # random draw from one pool says nothing about ranking in the other.
-FEED_SLOTS = 7
-FEED_RANDOM_SLOTS = 1
+FEED_SLOTS = 9
+FEED_RANDOM_SLOTS = 3
 LATER_SLOTS = 3
 LATER_RANDOM_SLOTS = 1
 SHORTLIST_SIZE = FEED_SLOTS + LATER_SLOTS
@@ -129,4 +134,13 @@ EXPOSURE_WEIGHTS = {
 # the exposure labels -- with the `current` ones it learns "the Guardian is bad"
 # straight out of the October flood, which he never looked at.
 PUBLICATION_MIN_DOCS = 15
+
+# The two rankers the nightly cycle interleaves. `control` is what ran before
+# KYRO-30, unchanged; `candidate` is what is being tested against it. To try a
+# new idea, edit `candidate` -- the slate, the arms and the refinement page all
+# follow. Promote a candidate by copying it into `control`.
+RANKERS = {
+    "control": {"scheme": "current", "publications": False},
+    "candidate": {"scheme": "exposure", "publications": True},
+}
 

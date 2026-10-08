@@ -90,8 +90,15 @@ def _duplicates(candidate, already, embeddings):
     return False
 
 
-def pick(store, model, taste, now=None, rng=None, trace=None):
+def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...].
+
+    With a `candidate` model, each pool's ranked slots are split between it and
+    `model` (the control) by team-draft interleaving: whichever ranker has fewer
+    picks so far chooses next, ties broken by coin flip, each taking its own
+    best document not already taken. Candidate picks get the slot `<pool>-cand`.
+    Both rankers draw from the same pool on the same night, so their open rates
+    are a like-for-like comparison -- the same argument as for the random arm.
 
     `trace`, if given, is filled in with the reasoning behind each pick --
     {doc_id: {rank, pool_size, short_reserve}} plus a "_pools" entry holding the
@@ -137,30 +144,50 @@ def pick(store, model, taste, now=None, rng=None, trace=None):
         """
         if not pool:
             return []
-        scores = recommender_model.score_documents(pool, embeddings, model, taste)
-        ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
+        teams = []
+        for slot, ranker, fallback in ((label, model, taste),
+                                       (f"{label}-cand", candidate, None)):
+            if ranker is None and fallback is None:
+                continue
+            scores = recommender_model.score_documents(pool, embeddings, ranker, fallback)
+            ranked = sorted(pool, key=lambda d: -scores.get(d["id"], 0.0))
+            teams.append({"slot": slot, "scores": scores, "ranked": ranked,
+                          "rank_of": {d["id"]: i + 1 for i, d in enumerate(ranked)}})
         ranked_slots = total - random_slots
-        rank_of = {d["id"]: i + 1 for i, d in enumerate(ranked)}
 
-        def take(candidates, limit, picks, short_reserve=False):
-            for candidate in candidates:
-                if len(picks) >= limit:
-                    break
-                if candidate["id"] in {d["id"] for d, _, _ in picks}:
+        def next_choice(team, picks, only_short):
+            for doc in team["ranked"]:
+                if only_short and (doc.get("word_count") or 0) >= config.SHORT_WORDS:
                     continue
-                if _duplicates(candidate, [d for d, _, _ in picks], embeddings):
+                if doc["id"] in {d["id"] for d, _, _ in picks}:
                     continue
-                picks.append((candidate, label, scores.get(candidate["id"], 0.0)))
-                trace[candidate["id"]] = {
-                    "rank": rank_of.get(candidate["id"]),
+                if _duplicates(doc, [d for d, _, _ in picks], embeddings):
+                    continue
+                return doc
+            return None
+
+        def take(limit, picks, short_reserve=False):
+            exhausted = set()
+            while len(picks) < limit and len(exhausted) < len(teams):
+                live = [t for t in teams if t["slot"] not in exhausted]
+                count = {t["slot"]: sum(1 for _, s, _ in picks if s == t["slot"]) for t in live}
+                fewest = min(count.values())
+                tied = [t for t in live if count[t["slot"]] == fewest]
+                team = tied[0] if len(tied) == 1 else rng.choice(tied)
+                doc = next_choice(team, picks, short_reserve)
+                if doc is None:
+                    exhausted.add(team["slot"])
+                    continue
+                picks.append((doc, team["slot"], team["scores"].get(doc["id"], 0.0)))
+                trace[doc["id"]] = {
+                    "rank": team["rank_of"].get(doc["id"]),
                     "pool_size": len(pool),
                     "short_reserve": short_reserve,
                 }
             return picks
 
-        short = [d for d in ranked if (d.get("word_count") or 0) < config.SHORT_WORDS]
-        picks = take(short, min(short_slots, ranked_slots), [], short_reserve=True)
-        picks = take(ranked, ranked_slots, picks)
+        picks = take(min(short_slots, ranked_slots), [], short_reserve=True)
+        picks = take(ranked_slots, picks)
         taken = {d["id"] for d, _, _ in picks}
         rest = [d for d in pool if d["id"] not in taken]
         drawn = rng.sample(rest, min(random_slots, len(rest)))
@@ -220,8 +247,14 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
     embed_info["duration_s"] = time.monotonic() - clock
 
     clock = time.monotonic()
-    model, stats = recommender_model.train(store)
+    model, stats = recommender_model.train(store, **config.RANKERS["control"])
     log(f"labels: {stats}")
+    candidate, candidate_stats = recommender_model.train(store, **config.RANKERS["candidate"])
+    log(f"candidate labels: {candidate_stats}")
+    if model is None:
+        # Interleaving a model against the cold-start taste vector would be
+        # measuring the cold start, not the candidate.
+        candidate = None
     metrics = None
     if model is None:
         taste = recommender_model.taste_vector(store)
@@ -237,7 +270,7 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
 
     old = evictable(store)
     trace = {}
-    chosen = pick(store, model, taste, trace=trace)
+    chosen = pick(store, model, taste, trace=trace, candidate=candidate)
     log(f"evicting {len(old)}, adding {len(chosen)}")
     for doc, slot, score in chosen:
         pretty = f"{score:.3f}" if score is not None else "  --  "
