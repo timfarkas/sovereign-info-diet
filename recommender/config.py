@@ -162,18 +162,22 @@ MISTRAL_BATCH_CHUNKS = 32
 # Re-run with --embed-limit, or raise this, on purpose.
 MISTRAL_MAX_WORDS_PER_RUN = 5_000_000
 
-# The two rankers the nightly cycle interleaves. `control` is what ran before
-# KYRO-30, unchanged; `candidate` is what is being tested against it. To try a
-# new idea, edit `candidate` -- the slate, the arms and the refinement page all
-# follow. Promote a candidate by copying it into `control`.
+# The two rankers the nightly cycle interleaves. `control` is what ships; the
+# `candidate` is what is being tested against it. To try a new idea, edit
+# `candidate` -- the slate, the arms and the refinement page all follow. Promote
+# a candidate by copying it into `control`. "embedding" names the vectors a
+# ranker is fitted on (default EMBED_KEY).
+# 2026-10-09 (KYRO-30, Tim): promoted exposure labels + publication on mistral
+# full text. Offline it beat the old control by ~0.14 AUC; mistral vs bge was a
+# wash on opens but ahead on rate:bad and fraction read, with too few ratings to
+# be sure -- so the candidate is the same ranker on bge, and the live arms say
+# whether the full text earns its keep.
 RANKERS = {
-    "control": {"scheme": "current", "publications": False},
+    "control": {"scheme": "exposure", "publications": True, "embedding": MISTRAL_EMBED_KEY},
     "candidate": {"scheme": "exposure", "publications": True},
 }
 # Extra rows for the refinement page's offline table only -- never drafted into
-# the live slate. "embedding" names the vectors a row is fitted on (default
-# EMBED_KEY); a row whose vectors are not in the store is skipped.
+# the live slate. A row whose vectors are not in the store is skipped.
 OFFLINE_RANKERS = {
-    f"{name} \u00b7 mistral full text": {**spec, "embedding": MISTRAL_EMBED_KEY}
-    for name, spec in RANKERS.items()
+    "retired control (current labels, bge)": {"scheme": "current", "publications": False},
 }

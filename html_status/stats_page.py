@@ -1321,14 +1321,14 @@ def render_refinement(rows):
           'ranker. <strong>triage</strong>: every 5th arrival block in which he opened at least '
           'half the feed on his own, minus everything bulk-cleared (&ge;20 "mark seen" in one '
           'minute -- a blind clear is not a no). Caveat: "triage" is built on the same '
-          'exposure idea the candidate\'s labels use, and its &ge;100-words bar is the '
-          'candidate\'s read bar, so it is a home game for the candidate. The nightly '
+          'exposure idea both live rankers\' labels use, and its &ge;100-words bar is their '
+          'read bar, so it is a home game for them against the retired control. The nightly '
           '"holdout auc" on the main page is NOT comparable across rankers -- each labelling '
-          'scheme defines its own holdout. Brackets are 90% bootstrap intervals. Rows marked '
-          '<strong>mistral full text</strong> are the same two rankers, fitted on '
-          'mistral-embed vectors of each document\'s whole text (footer cut, ~1,500-word '
-          'chunks averaged) instead of bge-small on title + summary. Those vectors were '
-          'loaded once, so documents that arrived later are missing from them.</p></div>')
+          'scheme defines its own holdout. Brackets are 90% bootstrap intervals. Since 2026-10-09 the control '
+          'is fitted on mistral-embed vectors of each document\'s whole text (footer cut, '
+          '~1,500-word chunks averaged) and the candidate on bge-small over title + summary; '
+          'otherwise they are the same ranker. The <strong>retired control</strong> row is the '
+          'pre-KYRO-30 ranker, kept for reference.</p></div>')
 
     tops = refine.get("top_fresh") or {}
     side = ""
