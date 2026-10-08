@@ -236,3 +236,18 @@ def test_subpages_land_under_the_recommender_page(paths):
         assert (paths / "html" / "recommender" / sub / "index.html").exists()
     main = (paths / "html" / "recommender" / "index.html").read_text()
     assert 'href="refinement/"' in main and 'href="summaries/"' in main
+
+
+def test_an_offline_row_fits_on_its_own_embedding_and_stays_off_the_slate(store, monkeypatch):
+    docs = corpus(monkeypatch, blocks=12)
+    docs += [doc(f"fresh{i}", saved_at=iso(1)) for i in range(5)]
+    stock(store, docs)
+    rng = np.random.default_rng(1)
+    store.save_embeddings("other#1", {d["id"]: rng.standard_normal(16).astype(np.float32) for d in docs})
+    rankers = {"control": config.RANKERS["control"],
+               "alt": {**config.RANKERS["control"], "embedding": "other#1"},
+               "absent": {**config.RANKERS["control"], "embedding": "never-loaded"}}
+    result = recommender_refine.compare(store, rankers=rankers, now=NOW)
+    assert set(result["rankers"]) == {"control", "alt"}         # no vectors, no row
+    assert result["rankers"]["alt"]["triage"]["n"] == result["rankers"]["control"]["triage"]["n"]
+    assert set(result["top_fresh"]) == {"control"}

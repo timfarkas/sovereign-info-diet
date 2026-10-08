@@ -154,4 +154,15 @@ RANKERS = {
     "control": {"scheme": "current", "publications": False},
     "candidate": {"scheme": "exposure", "publications": True},
 }
+# Extra rows for the refinement page's offline table only -- never drafted into
+# the live slate. "embedding" names the vectors a row is fitted on (default
+# EMBED_KEY); a row whose vectors are not in the store is skipped. The mistral
+# vectors are mistral-embed over each document's full text, chunks averaged
+# (KYRO-30), loaded once by hand: nothing embeds new documents with it, so
+# these rows only ever see the library as of that load.
+MISTRAL_EMBED_KEY = "mistral-embed#fulltext1"
+OFFLINE_RANKERS = {
+    f"{name} \u00b7 mistral full text": {**spec, "embedding": MISTRAL_EMBED_KEY}
+    for name, spec in RANKERS.items()
+}
 

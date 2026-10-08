@@ -257,8 +257,8 @@ def features(doc, vector, publications=()):
     return np.concatenate([vector, np.asarray(extras, dtype=np.float32)])
 
 
-def feature_count(publications=()):
-    return config.EMBED_DIM + 1 + len(CATEGORIES) + (len(publications) + 1 if publications else 0)
+def feature_count(publications=(), dim=config.EMBED_DIM):
+    return dim + 1 + len(CATEGORIES) + (len(publications) + 1 if publications else 0)
 
 
 def build_matrix(docs, embeddings, publications=()):
@@ -280,16 +280,17 @@ def publications_of(model):
     return list(getattr(model, "publications_", ()))
 
 
-def train(store, now=None, scheme="current", publications=False, exclude=()):
+def train(store, now=None, scheme="current", publications=False, exclude=(), embedding=None):
     """Fit on everything labelled. Returns (model, stats) or (None, stats).
 
     `scheme` names the labelling scheme, `publications` switches the publication one-hot
-    on, `exclude` holds doc ids to keep out of training (an evaluation set).
+    on, `exclude` holds doc ids to keep out of training (an evaluation set),
+    `embedding` names the store's vectors to fit on (default config.EMBED_KEY).
     The fitted vocabulary rides on the model as `publications_`, so scoring and
     attribution always build exactly the columns the model was fitted on.
     """
     labels = derive_labels(store, now=now, scheme=scheme)
-    embeddings = store.embeddings(config.EMBED_KEY)
+    embeddings = store.embeddings(embedding or config.EMBED_KEY)
     docs = [d for d in store.documents() if d["id"] in labels and d["id"] not in exclude]
     vocabulary = publication_vocabulary(docs) if publications else []
     X, kept = build_matrix(docs, embeddings, vocabulary)

@@ -118,16 +118,23 @@ def top_fresh(store, models, documents, embeddings, k=10, now=None):
 
 def compare(store, rankers=None, now=None):
     """The refinement-page payload: common-set AUCs per ranker, plus top picks."""
-    rankers = rankers or config.RANKERS
+    rankers = rankers or {**config.RANKERS, **config.OFFLINE_RANKERS}
     documents = store.documents()
     by_id = {d["id"]: d for d in documents}
-    embeddings = store.embeddings(config.EMBED_KEY)
+    vectors = {}
     sets, excluded = eval_sets(store, documents)
 
     results, models = {}, {}
     for name, spec in rankers.items():
+        key = spec.get("embedding", config.EMBED_KEY)
+        if key not in vectors:
+            vectors[key] = store.embeddings(key)
+        embeddings = vectors[key]
+        if not embeddings:
+            continue
         model, stats = recommender_model.train(store, now=now, exclude=excluded, **spec)
-        models[name] = model
+        if key == config.EMBED_KEY:
+            models[name] = model
         entry = {"spec": spec, "train_n": stats["usable"], "train_positives": stats["positives"],
                  "by_reason": stats["by_reason"]}
         for set_name, labels in sets.items():
@@ -144,7 +151,8 @@ def compare(store, rankers=None, now=None):
         baselines[set_name] = auc_with_interval(
             [labels[i] for i in ids], [by_id[i].get("word_count") or 0 for i in ids])
     return {"rankers": results, "word_count_baseline": baselines,
-            "top_fresh": top_fresh(store, models, documents, embeddings, now=now)}
+            "top_fresh": top_fresh(store, models, documents,
+                                   vectors.get(config.EMBED_KEY) or store.embeddings(config.EMBED_KEY), now=now)}
 
 
 def main():

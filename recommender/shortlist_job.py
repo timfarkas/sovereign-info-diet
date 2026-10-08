@@ -65,7 +65,8 @@ def embed_missing(store, limit=None):
         store.save_embeddings(config.EMBED_KEY, vectors)
         done += len(vectors)
         log(f"  {done}/{len(pending)}")
-    dropped = store.forget_other_embeddings(config.EMBED_KEY)
+    offline = {spec["embedding"] for spec in config.OFFLINE_RANKERS.values() if "embedding" in spec}
+    dropped = store.forget_other_embeddings(config.EMBED_KEY, *offline)
     if dropped:
         log(f"dropped {dropped} vectors from a superseded text recipe")
     return {"pending": len(pending), "embedded": done, "dropped_superseded": dropped}

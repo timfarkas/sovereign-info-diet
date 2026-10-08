@@ -38,11 +38,12 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS embeddings (
-    doc_id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
     model TEXT NOT NULL,
     dim INTEGER NOT NULL,
     vec BLOB NOT NULL,
-    embedded_at TEXT NOT NULL
+    embedded_at TEXT NOT NULL,
+    PRIMARY KEY (doc_id, model)
 );
 
 CREATE TABLE IF NOT EXISTS shortlist_events (
@@ -80,7 +81,23 @@ class Store:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        self._key_embeddings_by_model()
         self.conn.executescript(SCHEMA)
+
+    def _key_embeddings_by_model(self):
+        """Before KYRO-30 a document had one vector, keyed by doc_id alone, so a
+        second embedding model overwrote the first. Rebuild with (doc_id, model)."""
+        pk = [r["name"] for r in self.conn.execute("PRAGMA table_info(embeddings)") if r["pk"]]
+        if pk != ["doc_id"]:
+            return
+        self.conn.executescript("""
+            ALTER TABLE embeddings RENAME TO embeddings_old;
+            CREATE TABLE embeddings (
+                doc_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+                vec BLOB NOT NULL, embedded_at TEXT NOT NULL, PRIMARY KEY (doc_id, model));
+            INSERT INTO embeddings SELECT doc_id, model, dim, vec, embedded_at FROM embeddings_old;
+            DROP TABLE embeddings_old;
+        """)
 
     def close(self):
         self.conn.close()
@@ -145,9 +162,10 @@ class Store:
         )
         self.conn.commit()
 
-    def forget_other_embeddings(self, model):
+    def forget_other_embeddings(self, *keep):
         """Drop vectors from superseded text recipes, so the file stops growing."""
-        cursor = self.conn.execute("DELETE FROM embeddings WHERE model != ?", (model,))
+        marks = ",".join("?" * len(keep))
+        cursor = self.conn.execute(f"DELETE FROM embeddings WHERE model NOT IN ({marks})", keep)
         self.conn.commit()
         return cursor.rowcount
 

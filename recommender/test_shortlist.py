@@ -375,6 +375,14 @@ def test_a_superseded_text_recipe_does_not_linger_in_the_store(store):
     assert list(store.embeddings(config.EMBED_KEY)) == ["b"]
 
 
+def test_vectors_an_offline_ranker_uses_survive_the_cleanup(store):
+    stock(store, [doc("a")], embed=False)
+    for key in ("old-recipe", "offline#1", config.EMBED_KEY):
+        store.save_embeddings(key, {"a": np.zeros(4, dtype=np.float32)})
+    assert store.forget_other_embeddings(config.EMBED_KEY, "offline#1") == 1
+    assert store.embeddings("offline#1") and not store.embeddings("old-recipe")
+
+
 # -- features ----------------------------------------------------------------
 
 
@@ -645,3 +653,18 @@ def test_any_real_reading_is_a_positive(store, words, progress, read):
                       word_count=words, reading_progress=progress)])
     label = recommender_model.derive_labels(store, now=NOW, scheme="exposure")["d"]
     assert label[2] == ("read" if read else "bounced")
+
+
+def test_an_old_store_keeps_its_vectors_through_the_rekeying(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE embeddings (doc_id TEXT PRIMARY KEY, model TEXT NOT NULL,"
+                " dim INTEGER NOT NULL, vec BLOB NOT NULL, embedded_at TEXT NOT NULL)")
+    old.execute("INSERT INTO embeddings VALUES ('a', 'm', 4, ?, 'now')",
+                (np.ones(4, dtype=np.float32).tobytes(),))
+    old.commit(); old.close()
+    store = Store(str(path))
+    store.save_embeddings("other", {"a": np.zeros(4, dtype=np.float32)})
+    assert list(store.embeddings("m")["a"]) == [1, 1, 1, 1]
+    assert "a" in store.embeddings("other")
