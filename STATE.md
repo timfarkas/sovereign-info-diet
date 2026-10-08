@@ -117,10 +117,19 @@ with the digest). Local *embeddings* fit comfortably. Keep any single job under
   resurfaced from `later` (1 unranked). Ranked picks are deduplicated by cosine
   ≥ 0.93 and reserve a floor of short reads; the random arms are neither
   deduplicated nor length-constrained, because they are the measurement.
+- **full text** (since 2026-10-09): sync pulls `html_content`, keeps it as
+  plain text (footer cut) in the store's `fulltext` table, and `mistral-embed`
+  embeds new documents: header + body in 1,500-word chunks, word-weighted mean,
+  1024-dim, key `mistral-embed#fulltext1`. Paid API (~$0.1/M tokens, ~$0.08 a
+  300-doc night), `MISTRAL_API_KEY` from `.env`; a run over
+  `MISTRAL_MAX_WORDS_PER_RUN` stops instead of spending.
 - **two rankers, interleaved** (since KYRO-30): `config.RANKERS` holds a
-  `control` (the scheme above, unchanged) and a `candidate` (exposure-weighted
-  labels + a site_name one-hot). Each pool's ranked slots are team-drafted
-  between them; candidate picks carry slot `<pool>-cand`. Verdict lives on
+  `control` and a `candidate`. Since 2026-10-09 both use exposure-weighted
+  labels + a site_name one-hot; the control is fitted on the mistral full-text
+  vectors, the candidate on bge -- so the live arms test the full text. The
+  pre-KYRO-30 ranker (`current` labels, bge) is an offline row only. Each
+  model carries its vector key as `embedding_`. Each pool's ranked slots are
+  team-drafted between them; candidate picks carry slot `<pool>-cand`. Verdict lives on
   <http://192.168.2.6:8080/recommender/refinement/>; what the encoder reads is
   on <http://192.168.2.6:8080/recommender/summaries/>.
 
