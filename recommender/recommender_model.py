@@ -98,26 +98,38 @@ def derive_labels(store, now=None, scheme="current"):
     return labels
 
 
-def exposure_blocks(documents, shortlisted):
-    """{doc_id: fraction of its arrival block he organically opened}.
-
-    The arrival stream is everything that came in through the feed, in saved_at
-    order, cut into blocks of EXPOSURE_BLOCK. Shortlisted documents belong to a
-    block but do not count towards its open rate: opening something because we
-    put it in front of him says nothing about whether he scanned the rest.
-    """
+def arrival_blocks(documents):
+    """Everything that came in through the feed, in saved_at order, cut into
+    consecutive blocks of EXPOSURE_BLOCK. New arrivals only ever extend the
+    last block, so older blocks keep their identity from night to night."""
     stream = sorted(
         (d for d in documents
          if d.get("saved_at")
          and (d.get("location") == "feed" or d.get("category") in ("rss", "email"))),
         key=lambda d: d["saved_at"],
     )
+    size = config.EXPOSURE_BLOCK
+    return [stream[i:i + size] for i in range(0, len(stream), size)]
+
+
+def block_exposure(block, shortlisted):
+    """Fraction of a block he opened on his own.
+
+    Shortlisted documents belong to the block but do not count towards its open
+    rate: opening something because we put it in front of him says nothing about
+    whether he scanned the rest.
+    """
+    organic = [d for d in block if d["id"] not in shortlisted]
+    if not organic:
+        return 0.0
+    return sum(bool(d.get("first_opened_at")) for d in organic) / len(organic)
+
+
+def exposure_blocks(documents, shortlisted):
+    """{doc_id: exposure of its arrival block}."""
     exposure = {}
-    for start in range(0, len(stream), config.EXPOSURE_BLOCK):
-        block = stream[start:start + config.EXPOSURE_BLOCK]
-        organic = [d for d in block if d["id"] not in shortlisted]
-        rate = (sum(bool(d.get("first_opened_at")) for d in organic) / len(organic)
-                if organic else 0.0)
+    for block in arrival_blocks(documents):
+        rate = block_exposure(block, shortlisted)
         for d in block:
             exposure[d["id"]] = rate
     return exposure

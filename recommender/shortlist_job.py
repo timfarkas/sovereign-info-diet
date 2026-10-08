@@ -293,11 +293,24 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
             # it needs no path help -- same-directory import, same as config.
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
             from html_status import stats_page, stats_store
+            import recommender_refine
             import shortlist_stats
+            # Offline control-vs-candidate comparison on common held-out sets;
+            # trains both rankers once more with those sets excluded (~15 s).
+            refine = None
+            if model is not None:
+                try:
+                    refine = recommender_refine.compare(store)
+                except Exception:
+                    # The page then says "not measured"; the rest of the row stands.
+                    import traceback
+                    log("refine: offline comparison failed:")
+                    traceback.print_exc()
             row = shortlist_stats.build(
                 store, cycle=cycle, dry_run=dry_run, chosen=chosen, trace=trace,
                 evicted_ids=old, label_stats=stats, holdout=metrics,
                 trained=model is not None, model=model, sync_info=sync_info,
+                candidate=candidate, candidate_stats=candidate_stats, refine=refine,
                 embed_info=embed_info,
                 durations={"train_duration_s": train_duration,
                            "duration_s": time.monotonic() - started},

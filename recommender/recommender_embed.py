@@ -40,6 +40,9 @@ def document_text(doc):
     publications recur constantly in this corpus and carry a lot of the signal,
     and putting them in the text lets the linear head learn that without a
     separate per-source feature computed from the labels, which would leak.
+    (The candidate ranker's publication one-hot is not that: it is an indicator
+    per site, and its weight is fitted like any other -- no label goes into the
+    feature value itself.)
 
     Changing anything here means bumping config.EMBED_TEXT_VERSION.
     """
