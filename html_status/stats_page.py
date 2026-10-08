@@ -1320,7 +1320,11 @@ def render_refinement(rows):
           'exposure idea the candidate\'s labels use, and its &ge;100-words bar is the '
           'candidate\'s read bar, so it is a home game for the candidate. The nightly '
           '"holdout auc" on the main page is NOT comparable across rankers -- each labelling '
-          'scheme defines its own holdout. Brackets are 90% bootstrap intervals.</p></div>')
+          'scheme defines its own holdout. Brackets are 90% bootstrap intervals. Rows marked '
+          '<strong>mistral full text</strong> are the same two rankers, fitted on '
+          'mistral-embed vectors of each document\'s whole text (footer cut, ~1,500-word '
+          'chunks averaged) instead of bge-small on title + summary. Those vectors were '
+          'loaded once, so documents that arrived later are missing from them.</p></div>')
 
     tops = refine.get("top_fresh") or {}
     side = ""
