@@ -159,7 +159,7 @@ def damped_sample(docs, k, pool, rng):
     return drawn
 
 
-def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
+def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, reinsert=()):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...].
 
     With a `candidate` model, each pool's ranked slots are split between it and
@@ -168,6 +168,10 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
     best document not already taken. Candidate picks get the slot `<pool>-cand`.
     Both rankers draw from the same pool on the same night, so their open rates
     are a like-for-like comparison -- the same argument as for the random arm.
+
+    `reinsert` is a set of doc ids that skip the already-shortlisted and cooldown
+    checks, so a same-day rerun can pick the current list again. Without it they
+    would be treated as served, which is right for the nightly cycle.
 
     `trace`, if given, is filled in with the reasoning behind each pick --
     {doc_id: {rank, pool_size, short_reserve}} plus a "_pools" entry holding the
@@ -195,11 +199,10 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None):
         return bool(cycle and _parse(cycle) and _parse(cycle) > cooldown)
 
     def eligible(doc):
-        return (
-            not recently_shown(doc["id"])
-            and config.SHORTLIST_TAG not in recommender_model._tags(doc)
-            and all(doc["id"] in v for v in vectors.values())
-        )
+        served = (recently_shown(doc["id"])
+                  or config.SHORTLIST_TAG in recommender_model._tags(doc))
+        return ((not served or doc["id"] in reinsert)
+                and all(doc["id"] in v for v in vectors.values()))
 
     fresh_cutoff = now - timedelta(days=config.FEED_CANDIDATE_DAYS)
     feed = [
@@ -308,7 +311,7 @@ def evictable(store):
     return [doc_id for doc_id, action in state.items() if action == "added"]
 
 
-def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
+def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None, rerun=False):
     store = Store(config.RECOMMENDER_DB)
     client = ReadwiseClient()
     cycle = datetime.now(timezone.utc).date().isoformat()
@@ -353,7 +356,8 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None):
 
     old = evictable(store)
     trace = {}
-    chosen = pick(store, model, taste, trace=trace, candidate=candidate)
+    chosen = pick(store, model, taste, trace=trace, candidate=candidate,
+                  reinsert=set(old) if rerun else ())
     log(f"evicting {len(old)}, adding {len(chosen)}")
     for doc, slot, score in chosen:
         pretty = f"{score:.3f}" if score is not None else "  --  "
@@ -444,6 +448,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="decide, but write nothing")
     parser.add_argument("--full-sync", action="store_true", help="re-pull every document")
     parser.add_argument("--skip-sync", action="store_true", help="use the local store as-is")
+    parser.add_argument("--rerun", action="store_true",
+                        help="put the current shortlist back in the pool instead of treating it as served")
     parser.add_argument("--embed-limit", type=int, help="cap embeddings this run")
     args = parser.parse_args()
     return run(
@@ -451,6 +457,7 @@ def main():
         full_sync=args.full_sync,
         skip_sync=args.skip_sync,
         embed_limit=args.embed_limit,
+        rerun=args.rerun,
     )
 
 

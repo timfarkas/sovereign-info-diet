@@ -419,6 +419,17 @@ def test_pick_respects_the_reshow_cooldown(store):
     assert "f0" not in {d["id"] for d, _, _ in chosen}
 
 
+def test_reinserted_documents_can_be_picked_again_but_others_stay_served(store):
+    """A same-day rerun puts the current list back in the pool, nothing else."""
+    stock(store, [doc(f"f{i}") for i in range(4)])
+    for i in (0, 1):
+        store.log_event(f"f{i}", "added", NOW.date().isoformat())
+    store.log_event("f2", "added", (NOW - timedelta(days=5)).date().isoformat())
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW, reinsert={"f0", "f1"})
+    ids = {d["id"] for d, _, _ in chosen}
+    assert ids == {"f0", "f1", "f3"}
+
+
 def test_pick_fills_both_pools_with_their_own_random_arm(store):
     stock(
         store,
