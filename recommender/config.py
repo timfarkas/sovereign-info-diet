@@ -45,6 +45,14 @@ SHORTLIST_TAG = "shortlist"
 RATE_GOOD_TAG = "rate:good"
 RATE_BAD_TAG = "rate:bad"
 
+# Digests are our own nightly mails, which Reader ingests as email documents.
+# They are recognised by sender display name (the part of EMAIL_FROM before the
+# address) and category, and are treated as privileged: auto-tagged rate:good,
+# and the newest of each series gets an extra shortlist slot.
+DIGEST_AUTHOR = "Meta Minsky"
+DIGEST_CATEGORY = "email"
+DIGEST_SLOT = "digest"
+
 # Shape of a cycle: two pools, each with its own unranked random picks.
 #   feed  -- 9 slots from the fresh firehose, 3 of them random
 #   later -- 3 slots resurfaced from the backlog, 1 of them random

@@ -854,3 +854,39 @@ def test_the_age_term_keeps_the_attribution_exact(store, monkeypatch):
     score = recommender_model.score_documents([old], embeddings, model)["lastweek"]
     assert attr["probability"] == pytest.approx(score, abs=1e-6)
     assert attr["contributions"]["age"] < 0
+
+
+# -- digests -----------------------------------------------------------------
+
+def digest(doc_id, series, day, **kwargs):
+    return doc(doc_id, title=f"{series} - 2026-10-{day:02d}", author=config.DIGEST_AUTHOR,
+               category=config.DIGEST_CATEGORY, saved_at=iso(10 - day), **kwargs)
+
+
+def test_only_the_newest_unarchived_digest_of_each_series_is_privileged(store):
+    stock(store, [
+        digest("a1", "AI Digest", 1), digest("a2", "AI Digest", 2),
+        digest("g1", "Geo Digest", 1), digest("g2", "Geo Digest", 2, location="archive"),
+        doc("x", author="someone else", category="email", title="AI Digest - 2026-10-03"),
+    ])
+    assert {d["id"] for d in shortlist_job.privileged_digests(store)} == {"a2"}
+
+
+def test_digests_get_rate_good_in_reader_and_locally_but_other_mail_does_not(store):
+    stock(store, [digest("a1", "AI Digest", 1, tags={"keep": {}}), doc("x", category="email")])
+
+    class Client:
+        sent = None
+        def bulk_set_tags(self, updates):
+            Client.sent = updates
+
+    assert shortlist_job.tag_digests(store, Client()) == 1
+    assert Client.sent == {"a1": ["keep", config.RATE_GOOD_TAG]}
+    assert config.RATE_GOOD_TAG in recommender_model._tags(store.document("a1"))
+    assert shortlist_job.tag_digests(store, Client()) == 0      # idempotent
+
+
+def test_privileged_digests_never_take_a_regular_slot(store):
+    stock(store, [digest("a1", "AI Digest", 1)] + [doc(f"f{i}") for i in range(20)])
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW, skip={"a1"})
+    assert "a1" not in {d["id"] for d, _, _ in chosen}

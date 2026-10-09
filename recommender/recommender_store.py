@@ -139,6 +139,12 @@ class Store:
             sql += " WHERE " + " AND ".join(clauses)
         return [dict(r) for r in self.conn.execute(sql, params)]
 
+    def set_tags(self, doc_id, tags):
+        """Mirror a tag write we just made to Reader, so tonight's fit sees it."""
+        self.conn.execute("UPDATE documents SET tags = ? WHERE id = ?",
+                          (json.dumps(sorted(tags)), doc_id))
+        self.conn.commit()
+
     def document(self, doc_id):
         row = self.conn.execute(
             "SELECT * FROM documents WHERE id = ?", (doc_id,)

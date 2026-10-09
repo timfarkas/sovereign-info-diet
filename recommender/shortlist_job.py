@@ -12,6 +12,7 @@ whole decision without writing anything.
 import argparse
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -159,7 +160,7 @@ def damped_sample(docs, k, pool, rng):
     return drawn
 
 
-def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, reinsert=()):
+def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, reinsert=(), skip=()):
     """Choose this cycle's shortlist. Returns [(doc, slot, score), ...].
 
     With a `candidate` model, each pool's ranked slots are split between it and
@@ -172,6 +173,9 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, re
     `reinsert` is a set of doc ids that skip the already-shortlisted and cooldown
     checks, so a same-day rerun can pick the current list again. Without it they
     would be treated as served, which is right for the nightly cycle.
+
+    `skip` is a set of doc ids kept out of every pool (the privileged digests,
+    which have their own slot).
 
     `trace`, if given, is filled in with the reasoning behind each pick --
     {doc_id: {rank, pool_size, short_reserve}} plus a "_pools" entry holding the
@@ -201,7 +205,8 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, re
     def eligible(doc):
         served = (recently_shown(doc["id"])
                   or config.SHORTLIST_TAG in recommender_model._tags(doc))
-        return ((not served or doc["id"] in reinsert)
+        return (doc["id"] not in skip
+                and (not served or doc["id"] in reinsert)
                 and all(doc["id"] in v for v in vectors.values()))
 
     fresh_cutoff = now - timedelta(days=config.FEED_CANDIDATE_DAYS)
@@ -303,6 +308,42 @@ def pick(store, model, taste, now=None, rng=None, trace=None, candidate=None, re
     )
 
 
+def is_digest(doc):
+    return (doc.get("category") == config.DIGEST_CATEGORY
+            and doc.get("author") == config.DIGEST_AUTHOR)
+
+
+def privileged_digests(store):
+    """The newest digest of each series, unless it is already archived.
+
+    A series is the title without its trailing date ("AI Digest - 2026-10-08" ->
+    "AI Digest"). A digest stays privileged until Tim archives it or a newer one
+    of its series arrives, whichever comes first.
+    """
+    newest = {}
+    for doc in store.documents():
+        if not is_digest(doc):
+            continue
+        series = re.sub(r"\s*-\s*\d{4}-\d{2}-\d{2}\s*$", "", doc.get("title") or "")
+        if series not in newest or doc["saved_at"] > newest[series]["saved_at"]:
+            newest[series] = doc
+    return [d for d in newest.values() if d["location"] != "archive"]
+
+
+def tag_digests(store, client, dry_run=False):
+    """Tag every digest rate:good in Reader and in the local store. Returns the count."""
+    updates = {}
+    for doc in store.documents():
+        tags = recommender_model._tags(doc)
+        if is_digest(doc) and config.RATE_GOOD_TAG not in tags:
+            updates[doc["id"]] = sorted(tags | {config.RATE_GOOD_TAG})
+    if updates and not dry_run:
+        client.bulk_set_tags(updates)
+        for doc_id, tags in updates.items():
+            store.set_tags(doc_id, tags)
+    return len(updates)
+
+
 def evictable(store):
     """Documents we shortlisted in an earlier cycle and have not yet evicted."""
     state = {}
@@ -332,6 +373,12 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None, rerun
     embed_info = embed_missing(store, limit=embed_limit)
     embed_info["duration_s"] = time.monotonic() - clock
 
+    tagged = tag_digests(store, client, dry_run=dry_run)
+    if tagged:
+        log(f"tagged {tagged} digests {config.RATE_GOOD_TAG}")
+    digests = privileged_digests(store)
+    digest_ids = {d["id"] for d in digests}
+
     clock = time.monotonic()
     model, stats = recommender_model.train(store, **config.RANKERS["control"])
     log(f"labels: {stats}")
@@ -354,11 +401,16 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None, rerun
         log(f"holdout: {metrics}" if metrics else "holdout: not enough held-out signal yet")
     train_duration = time.monotonic() - clock
 
-    old = evictable(store)
+    # Privileged digests stay on the list across nights, so they are neither
+    # evicted nor re-added while they are still privileged.
+    held = [d for d in evictable(store) if d in digest_ids]
+    old = [d for d in evictable(store) if d not in digest_ids]
+    new_digests = [d for d in digests if d["id"] not in held]
     trace = {}
     chosen = pick(store, model, taste, trace=trace, candidate=candidate,
-                  reinsert=set(old) if rerun else ())
-    log(f"evicting {len(old)}, adding {len(chosen)}")
+                  reinsert=set(old) if rerun else (), skip=digest_ids)
+    log(f"evicting {len(old)}, adding {len(chosen)} + {len(new_digests)} digests "
+        f"({len(held)} digests kept)")
     for doc, slot, score in chosen:
         pretty = f"{score:.3f}" if score is not None else "  --  "
         log(f"  [{slot:9}] {pretty}  {(doc.get('title') or '')[:70]}")
@@ -432,12 +484,18 @@ def run(dry_run=False, full_sync=False, skip_sync=False, embed_limit=None, rerun
         updates[doc["id"]] = sorted(
             recommender_model._tags(doc) | {config.SHORTLIST_TAG}
         )
+    for doc in new_digests:
+        updates[doc["id"]] = sorted(
+            recommender_model._tags(doc) | {config.SHORTLIST_TAG}
+        )
     if updates:
         client.bulk_set_tags(updates)
     for doc_id in old:
         store.log_event(doc_id, "evicted", cycle)
     for doc, slot, score in chosen:
         store.log_event(doc["id"], "added", cycle, slot=slot, score=score)
+    for doc in new_digests:
+        store.log_event(doc["id"], "added", cycle, slot=config.DIGEST_SLOT)
     log(f"wrote {len(updates)} tag updates")
     publish()
     return 0
