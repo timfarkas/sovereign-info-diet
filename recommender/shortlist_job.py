@@ -73,6 +73,7 @@ def embed_missing(store, limit=None):
     if limit:
         pending = pending[:limit]
     done = 0
+    clock = time.monotonic()
     if pending:
         log(f"embedding {len(pending)} documents")
     for start in range(0, len(pending), 200):
@@ -81,7 +82,8 @@ def embed_missing(store, limit=None):
         store.save_embeddings(config.EMBED_KEY, vectors)
         done += len(vectors)
         log(f"  {done}/{len(pending)}")
-    info = {"pending": len(pending), "embedded": done}
+    info = {"pending": len(pending), "embedded": done,
+            "bge_duration_s": time.monotonic() - clock}
     if config.MISTRAL_EMBED_KEY in used_embeddings():
         info["fulltext"] = embed_fulltext(store, limit)
     keys = used_embeddings()
@@ -115,13 +117,15 @@ def embed_fulltext(store, limit=None):
     log(f"full-text embedding {len(pending)} documents ({words:,} words, "
         f"{sum(d['id'] in bodies for d in pending)} with a body)")
     done = 0
+    clock = time.monotonic()
     for start in range(0, len(pending), 200):
         chunk = pending[start : start + 200]
         vectors = recommender_embed.mistral_embed_documents(chunk, bodies)
         store.save_embeddings(config.MISTRAL_EMBED_KEY, vectors)
         done += len(vectors)
         log(f"  {done}/{len(pending)}")
-    return {"pending": len(pending), "embedded": done, "words": words}
+    return {"pending": len(pending), "embedded": done, "words": words,
+            "bge_duration_s": time.monotonic() - clock}
 
 
 def _parse(stamp):

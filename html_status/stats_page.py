@@ -1191,19 +1191,21 @@ def render_recommender(rows):
     # -- pipeline mechanics
     sync = last.get("sync") or {}
     embed = last.get("embed") or {}
+    ft = embed.get("fulltext") or {}
     mechanics = (
         '<h2>pipeline</h2><div class="card">' + table(
             ["stage", "did", "took"],
             [["sync", f'{num(sync.get("documents"))} documents from Readwise'
                       + (" (full backfill)" if sync.get("full") else ""),
               num(sync.get("duration_s"), 1, " s")],
-             ["embed", f'{num(embed.get("embedded"))} new vectors'
-                       + (f', {num((embed.get("fulltext") or {}).get("embedded"))} full-text '
-                          f'({num((embed.get("fulltext") or {}).get("words"))} words)'
-                          if embed.get("fulltext") else "")
+             ["embed: bge-small", f'{num(embed.get("embedded"))} new vectors'
                        + (f', {num(embed.get("dropped_superseded"))} dropped from a '
                           f'superseded recipe' if embed.get("dropped_superseded") else ""),
-              num(embed.get("duration_s"), 1, " s")],
+              num(embed.get("bge_duration_s"), 1, " s")],
+             *([["embed: mistral full text",
+                 f'{num(ft.get("embedded"))} new vectors ({num(ft.get("words"))} words)',
+                 num(ft.get("duration_s"), 1, " s")]] if ft else []),
+             ["embed total", "both of the above", num(embed.get("duration_s"), 1, " s")],
              ["train", ("logistic regression on "
                         f'{num(lab.get("usable"))} labels'
                         if last.get("trained") else
@@ -1214,7 +1216,10 @@ def render_recommender(rows):
             ["l", "l", "n"],
         )
         + table(["", ""], [
-            ["encoder", esc(last.get("embed_key") or "?")],
+            ["vectors per ranker", " &middot; ".join(
+                f'{esc(name)}: {esc(spec.get("embedding") or last.get("embed_key") or "?")}'
+                for name, spec in (last.get("rankers") or {}).items()) or DASH],
+            ["dedup + taste vector", esc(last.get("embed_key") or "?")],
             ["corpus by location", " &middot; ".join(
                 f"{esc(k or 'none')} {v:,}"
                 for k, v in sorted((corpus.get("by_location") or {}).items(),
