@@ -262,6 +262,7 @@ def test_prompt_carries_all_three_sources_and_the_weighting():
         window_days=1,
         prior_notes="", longrunning="",
         posts_content="REDDIT_MARKER",
+        feed_content="FEED_MARKER",
         tweets_content=format_tweets([{
             "id": "1", "handle": "karpathy", "author_name": "A", "likes": 5,
             "retweets": 2, "created_at": "x", "text": "X_MARKER",
@@ -270,7 +271,8 @@ def test_prompt_carries_all_three_sources_and_the_weighting():
                                      "text": "PAGE_MARKER", "status": "ok"}]),
     )
     assert "REDDIT_MARKER" in body and "X_MARKER" in body and "PAGE_MARKER" in body
-    assert "65%" in body and "35%" in body
+    assert "FEED_MARKER" in body
+    assert "70%" in body and "30%" in body
     assert "reddit.com" in body           # the link prohibition is spelled out
     assert "arxiv.org/abs/1" in body
 
@@ -281,7 +283,7 @@ def test_prompt_never_prescribes_a_fixed_missing_detail_fragment():
     at all now, and the instruction must still cover the missing-detail case."""
     from prompts import AI as T
     assert "detail not in source" not in T
-    assert "state it if it matters" in T
+    assert "flag that" in T
 
 
 def test_prompt_fences_fetched_pages_as_untrusted_data():
@@ -545,8 +547,8 @@ def test_prompt_tells_the_model_to_link_pages_it_could_not_read():
     assert "https://openai.com/index/gpt6/" in body
     assert "HTTP 403" in body
     from prompts import AI as T
-    assert "still a link worth giving the reader" in T
-    assert "never drop a link just because it was unreadable" in T
+    assert "is still a good link" in T
+    assert "Never drop a link just because it was unreadable" in T
 
 
 def test_walled_link_labels_are_readable_without_a_title():

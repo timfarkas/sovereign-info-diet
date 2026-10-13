@@ -5,9 +5,9 @@ Two jobs, in order of how much they matter:
 
   1. GUARD THE AI DIGEST. It is in production and Tim notices breakage by a
      digest not arriving. The AI topic's row must keep reproducing the values
-     the pipeline had hardcoded, and it must stay out of the feed corpus
-     entirely. These are the tests that fail if a future edit to topics.py
-     "tidies up" the AI row.
+     the pipeline had hardcoded (cadence, window, subreddits, whole X corpus),
+     and its feed routing must stay selective. These are the tests that fail if
+     a future edit to topics.py "tidies up" the AI row.
   2. Assert the invariants every topic shares -- no social-platform links, the
      untrusted-data fence, HTML-only output -- as PROPERTIES of each prompt
      rather than by comparing wording, since the AI prompt is deliberately a
@@ -96,21 +96,24 @@ class TestAIDigestUnchanged:
         assert ai.x_all is True
         assert ai.select_tweets(tweets) == tweets
 
-    def test_subscribes_to_no_feeds(self):
+    def test_subscribes_to_ai_feeds(self):
         ai = topics.topic("ai")
-        assert ai.feeds == () and ai.feed_urls == ()
+        assert ai.feeds and ai.feed_urls and ai.keywords
 
-    def test_gets_zero_feed_items_from_a_full_pool(self):
-        """The regression this guard exists for.
-
-        `matches()` answers True for an empty keyword set, because for TWEETS
-        that means "take everything". Routed through the feed selector that same
-        answer handed the AI digest all 279 items of a live pool and filled the
-        digest with Austrian domestic politics.
+    def test_gets_only_ai_items_from_a_mixed_pool(self):
+        """Feed routing for AI is by publication or AI keyword, never "take
+        everything": the pool is mostly Bloomberg and Guardian items about other
+        things, and an empty-keyword fallthrough once filled the digest with
+        Austrian domestic politics.
         """
-        pool = [feed_item(title="EU fines Meta"), feed_item(title="H5N1 in dairy"),
-                feed_item(title="GPT-6 released")]
-        assert topics.topic("ai").select_feed_items(pool) == []
+        ai_items = [feed_item(title="OpenAI releases GPT-6"),
+                    feed_item(title="Anthropic publishes an interpretability result"),
+                    feed_item(title="Nvidia export controls tighten"),
+                    feed_item(title="Quiet week", site="Import AI")]
+        noise = [feed_item(title="EU fines Meta"), feed_item(title="H5N1 in dairy"),
+                 feed_item(title="Euler's identity, explained")]
+        got = {i["title"] for i in topics.topic("ai").select_feed_items(noise + ai_items)}
+        assert got == {i["title"] for i in ai_items}
 
     def test_history_and_page_names_follow_the_uniform_scheme(self):
         ai = topics.topic("ai")

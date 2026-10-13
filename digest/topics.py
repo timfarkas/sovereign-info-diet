@@ -204,13 +204,40 @@ def _compile(keywords) -> re.Pattern:
 # The topics
 # =============================================================================
 
-# -- AI: the original digest, reproduced exactly -------------------------------
-# Every value here is what the pipeline hardcoded before this module existed:
-# TIME_HORIZON_DAYS=2, MAX_AGE_HOURS=20, SUBREDDITS, POSTS_TO_ANALYZE//5 == 12,
-# SUMMARY_COST_CEILING_USD, LINK_FETCH_MAX_PAGES and the whole X corpus. Its
-# prompt now lives in prompts.py with the others; it is the same text as before
-# plus the scratch-notes and long-running-board trailer the other topics have. Changing one of them is a change to
-# the digest Tim reads every morning, so do it on purpose.
+# -- AI: the original digest ---------------------------------------------------
+# Cadence, window, subreddits, quota, cost ceiling and the whole X corpus are
+# what the pipeline hardcoded before this module existed. Changed 2026-10-13
+# (Tim): it now also reads feeds, routed like the other three topics, and its
+# prompt is the shared skeleton with an AI priorities block. Changing one of
+# these is a change to the digest Tim reads every morning, so do it on purpose.
+AI_KEYWORDS = (
+    "ai", "a.i.", "artificial intelligence", "machine learning",
+    "deep learning", "neural network", "large language model",
+    "language model", "llm", "llms", "chatbot", "generative ai", "genai",
+    "foundation model", "frontier model", "reasoning model", "agi",
+    "superintelligence", "agentic", "ai agent", "ai agents", "openai",
+    "anthropic", "deepmind", "google gemini", "gemini", "chatgpt", "gpt",
+    "claude", "llama", "mistral", "deepseek", "xai", "grok", "nvidia",
+    "gpu", "gpus", "tpu", "h100", "h200", "blackwell", "data center",
+    "data centre", "training run", "fine-tuning", "inference cost",
+    "open-weight", "open weights", "alignment", "ai safety", "ai risk",
+    "interpretability", "red team", "red-teaming", "jailbreak",
+    "reward hacking", "deepfake", "ai act", "ai regulation", "ai policy",
+    "ai bill", "executive order on ai", "compute", "scaling law",
+    "scaling laws", "benchmark", "robotics", "humanoid", "self-driving",
+    "autonomous vehicle", "alphafold",
+)
+
+# publications whose whole output is on-topic, routed wholesale; the general
+# feeds (Bloomberg, Guardian, WIRED, ...) reach the AI digest by keyword only
+AI_FEEDS = (
+    "Import AI", "Zvi", "Don't Worry About the Vase", "Interconnects",
+    "Alignment Forum", "alignmentforum", "LessWrong", "lesswrong",
+    "Transformer", "Epoch AI", "OpenAI", "Google DeepMind", "anthropic.com",
+    "Hugging Face", "MIT Technology Review",
+)
+
+
 def _ai_topic() -> Topic:
     from config import (LINK_FETCH_MAX_PAGES, POSTS_TO_ANALYZE, SUBREDDITS,
                         SUMMARY_COST_CEILING_USD, TIME_HORIZON_DAYS)
@@ -219,19 +246,36 @@ def _ai_topic() -> Topic:
         key="ai",
         name="AI",
         prompt=AI,
-        system=("You are a sharp, insightful AI/tech news analyst with a good "
-                "sense of humor."),
-        priorities_blurb="frontier capability, alignment and x-risk, sentiment, "
-                         "the absurd",
+        system=("You are a sharp, insightful AI/tech news analyst. You weigh "
+                "capability, policy and safety developments by their plausible "
+                "world-scale consequences, you prefer a number, an eval or a "
+                "rule's text to an adjective, and you relay an unconfirmed "
+                "claim as a claim."),
+        priorities_blurb="world-changing capability, policy and safety "
+                         "developments, x-risk",
         every_n_days=1,
         window_days=TIME_HORIZON_DAYS,
         lookback_hours=20,
         subreddits=tuple(SUBREDDITS),
         posts_per_subreddit=POSTS_TO_ANALYZE // len(SUBREDDITS),
         x_all=True,          # the AI digest reads every tweet, as it always has
-        keywords=(),         # nothing to filter: x_all short-circuits it
-        feeds=(),            # and no feed items, so its prompt is unchanged
-        feed_urls=(),
+        keywords=AI_KEYWORDS,   # feed items only: x_all short-circuits it for X
+        feeds=AI_FEEDS,
+        # Probed live 2026-10-13: reachable AND publishing within the last two
+        # weeks. aisnakeoil.com and metr.org 301 a scripted fetch and anthropic
+        # publishes no RSS, so none of the three are here -- they reach the
+        # digest via the reader's Readwise subscriptions or X instead.
+        feed_urls=(
+            "https://importai.substack.com/feed",
+            "https://thezvi.substack.com/feed",
+            "https://www.interconnects.ai/feed",
+            "https://www.alignmentforum.org/feed.xml",
+            "https://www.lesswrong.com/feed.xml?view=curated-rss",
+            "https://www.transformernews.ai/feed",
+            "https://epochai.substack.com/feed",
+            "https://openai.com/news/rss.xml",
+            "https://deepmind.google/blog/rss.xml",
+        ),
         cost_ceiling_usd=SUMMARY_COST_CEILING_USD,
         link_fetch_max_pages=LINK_FETCH_MAX_PAGES,
     )
