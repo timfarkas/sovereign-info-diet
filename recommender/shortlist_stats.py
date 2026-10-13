@@ -46,7 +46,7 @@ def rating(doc):
     return None
 
 
-def live_arms(store):
+def live_arms(store, since=None):
     """Ranked vs random, measured on what he actually did. The honest metric.
 
     Each arm is counted once per document, not once per event, so a document
@@ -54,6 +54,8 @@ def live_arms(store):
     """
     seen = {}
     for event in store.events():
+        if since and event["cycle"] < since:
+            continue
         if event["action"] == "added" and event["doc_id"] not in seen:
             seen[event["doc_id"]] = event["slot"] or "unknown"
     arms = {}
@@ -76,6 +78,13 @@ def live_arms(store):
         arm["open_rate"] = arm["opened"] / arm["shown"] if arm["shown"] else None
         arm["read_rate"] = arm["read"] / arm["shown"] if arm["shown"] else None
     return arms
+
+
+def interleaving_since(store):
+    """The first cycle a candidate ranker drafted a pick, or None if none has yet."""
+    cycles = [e["cycle"] for e in store.events()
+              if e["action"] == "added" and (e["slot"] or "").endswith("-cand")]
+    return min(cycles) if cycles else None
 
 
 def overnight_signals(documents, since):
@@ -182,12 +191,14 @@ def evidence(doc_id, embeddings, labelled, k=3):
     return out
 
 
-def baseline_features(docs, embeddings):
+def baseline_features(docs, embeddings, publications=(), ages=None):
     """The average document, in feature space. The origin the split is taken about.
 
     Attributing against zero would say "long documents score high" even when
     every candidate is long; attributing against the mean says what makes THIS
     document different from the rest of the corpus, which is the question.
+    With `ages` (exposure ages) the age column's origin is the age he usually
+    sees things at, so a week-old candidate reads as "older than usual".
     """
     if not docs or not embeddings:
         return None
@@ -195,36 +206,48 @@ def baseline_features(docs, embeddings):
     if not vectors:
         return None
     mean_vector = np.mean(np.vstack(vectors), axis=0)
+    rows = docs
     extras = np.mean(
-        np.vstack([recommender_model.features(d, np.zeros(0, dtype=np.float32))
-                   for d in docs]),
+        np.vstack([recommender_model.features(d, np.zeros(0, dtype=np.float32), publications,
+                                              ages[d["id"]] if ages is not None else None)
+                   for d in rows]),
         axis=0,
     )
     return np.concatenate([mean_vector, extras])
 
 
-GROUPS = ("topic", "length", "format")
+GROUPS = ("topic", "length", "format")     # + "publication" / "age" for a model that has it
 
 
-def attribution(doc, vector, model, baseline):
-    """Split the logit into topic / length / format, around the average document.
+def attribution(doc, vector, model, baseline, now=None):
+    """Split the logit into topic / length / format (/ publication), around the
+    average document.
 
     Exact for a linear model: baseline_logit + sum(contributions) == logit, so
     the bars add up to the score rather than merely gesturing at it.
     """
     if model is None or baseline is None or vector is None:
         return None
-    x = recommender_model.features(doc, vector)
+    publications = recommender_model.publications_of(model)
+    age = getattr(model, "age_", False)
+    x = recommender_model.features(
+        doc, vector, publications,
+        recommender_model.live_ages([doc], now)[doc["id"]] if age else None)
     w = model.coef_[0]
     if len(w) != len(x) or len(baseline) != len(x):
         return None
     delta = w * (x - baseline)
-    dim = config.EMBED_DIM
+    dim = len(vector)
+    formats = dim + 1 + len(recommender_model.CATEGORIES)
     contributions = {
         "topic": float(delta[:dim].sum()),
         "length": float(delta[dim]),
-        "format": float(delta[dim + 1:].sum()),
+        "format": float(delta[dim + 1:formats].sum()),
     }
+    if publications:
+        contributions["publication"] = float(delta[formats:len(delta) - age].sum())
+    if age:
+        contributions["age"] = float(delta[-1])
     baseline_logit = float(model.intercept_[0] + w @ baseline)
     logit = baseline_logit + sum(contributions.values())
     return {
@@ -235,19 +258,45 @@ def attribution(doc, vector, model, baseline):
         "probability": float(1 / (1 + np.exp(-logit))),
         "word_count": doc.get("word_count"),
         "category": doc.get("category"),
+        # The column it lit, or None for the shared "other" column.
+        "publication": (recommender_model.site(doc)
+                        if recommender_model.site(doc) in publications else None),
     }
+
+
+def spotcheck(documents, chosen, store, n=10, seed=None):
+    """What the encoder actually reads, for 10 shortlist picks and 10 random feed docs.
+
+    The question it answers is whether Readwise's summaries are good enough to
+    rank on at all -- so each entry carries the exact text that was embedded,
+    not the title alone.
+    """
+    import random
+    import recommender_embed
+
+    def entry(doc, slot):
+        return {"id": doc["id"], "slot": slot, "title": doc.get("title"),
+                "site_name": doc.get("site_name"), "word_count": doc.get("word_count"),
+                "url": doc.get("url"), "embedded_text": recommender_embed.document_text(doc)}
+
+    picks = [entry(store.document(d["id"]) or d, slot) for d, slot, _ in chosen][:n]
+    feed = [d for d in documents if d.get("location") == "feed"]
+    drawn = random.Random(seed).sample(feed, min(n, len(feed)))
+    return {"shortlist": picks, "random_feed": [entry(d, "random") for d in drawn]}
 
 
 def describe(doc, slot, score, trace):
     """Why this document is on tonight's list, in one sentence he can check."""
     pool = "fresh feed" if slot.startswith("feed") else "resurfaced backlog"
     size = trace.get("pool_size")
+    who = "candidate ranker" if slot.endswith("-cand") else "control ranker"
     if slot.endswith("-random"):
         return (f"random control draw from the same {size} {pool} candidates the "
                 f"ranked picks came out of -- unranked on purpose, this is the arm "
                 f"the ranking gets measured against")
     rank = trace.get("rank")
-    parts = [f"ranked #{rank} of {size} {pool} candidates" if rank else f"{pool} pick"]
+    parts = [f"{who}: ranked #{rank} of {size} {pool} candidates" if rank
+             else f"{who}: {pool} pick"]
     if score is not None:
         parts.append(f"score {score:.3f}")
     if trace.get("short_reserve"):
@@ -258,7 +307,7 @@ def describe(doc, slot, score, trace):
 
 def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
           holdout, trained, sync_info, embed_info, durations, model=None,
-          problems=None):
+          problems=None, candidate=None, candidate_stats=None, refine=None):
     """Assemble the run row the status page renders."""
     embeddings = store.embeddings(config.EMBED_KEY)
     # One pass over the corpus, shared by everything below. Each of these used to
@@ -268,7 +317,20 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
     labels = recommender_model.derive_labels(store)
     positives = positive_matrix(labels, embeddings)
     labelled = labelled_matrix(labels, embeddings)
-    baseline = baseline_features(documents, embeddings)
+    # Attribution reads each model's own vectors; neighbours stay on bge.
+    own = {}
+    for m in (model, candidate):
+        if m is not None:
+            key = recommender_model.embedding_of(m)
+            own[key] = embeddings if key == config.EMBED_KEY else own.get(key) or store.embeddings(key)
+    ages = (recommender_model.exposure_ages(store, documents)
+            if any(getattr(m, "age_", False) for m in (model, candidate)) else None)
+    baselines = {
+        id(m): baseline_features(documents, own[recommender_model.embedding_of(m)],
+                                 recommender_model.publications_of(m),
+                                 ages if getattr(m, "age_", False) else None)
+        for m in (model, candidate) if m is not None
+    }
 
     def titled(items):
         for item in items or []:
@@ -289,7 +351,9 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         # arm into another one of the model's opinions.
         explain = None
         if not slot.endswith("-random"):
-            explain = attribution(doc, embeddings.get(doc["id"]), model, baseline)
+            ranker = candidate if slot.endswith("-cand") else model
+            explain = (attribution(doc, own[recommender_model.embedding_of(ranker)].get(doc["id"]), ranker,
+                                   baselines.get(id(ranker))) if ranker is not None else None)
             near_by_label = evidence(doc["id"], embeddings, labelled)
             if near_by_label and explain:
                 explain["like"] = titled(near_by_label["like"])
@@ -347,6 +411,12 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         "embed_key": config.EMBED_KEY,
         "features": config.EMBED_DIM + 1 + len(recommender_model.CATEGORIES),
         "labels": label_stats,
+        "rankers": config.RANKERS,
+        "candidate_labels": candidate_stats,
+        "candidate_features": (recommender_model.feature_count(
+            recommender_model.publications_of(candidate)) if candidate is not None else None),
+        "refine": refine,
+        "spotcheck": spotcheck(documents, chosen, store),
         "trained": trained,
         "holdout": holdout,
         # With no sync there is nothing newer to count, and printing zeros would
@@ -354,6 +424,11 @@ def build(store, *, cycle, dry_run, chosen, trace, evicted_ids, label_stats,
         "overnight": (None if sync_info.get("skipped")
                       else overnight_signals(documents, sync_info.get("since"))),
         "arms": live_arms(store),
+        # The A/B table only counts from the first night the candidate drafted,
+        # so the control's pre-interleaving history cannot flatter or sink it.
+        "arms_ab_since": interleaving_since(store),
+        "arms_ab": (live_arms(store, since=interleaving_since(store))
+                    if interleaving_since(store) else {}),
         "pools": trace.get("_pools", {}),
         "picks": picks,
         "evicted": evicted,

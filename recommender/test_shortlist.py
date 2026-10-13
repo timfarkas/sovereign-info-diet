@@ -64,6 +64,10 @@ def stock(store, documents, embed=True):
             v = rng.standard_normal(config.EMBED_DIM).astype(np.float32)
             vectors[d["id"]] = v / np.linalg.norm(v)
         store.save_embeddings(config.EMBED_KEY, vectors)
+        # the full-text vectors: another space, another width
+        store.save_embeddings(config.MISTRAL_EMBED_KEY, {
+            i: v / np.linalg.norm(v) for i, v in
+            ((d["id"], rng.standard_normal(32).astype(np.float32)) for d in documents)})
 
 
 # -- fake transport ----------------------------------------------------------
@@ -242,6 +246,114 @@ def test_a_same_day_eviction_is_not_evidence_he_passed(store):
     assert "a" not in recommender_model.derive_labels(store, now=NOW)
 
 
+# -- the exposure labelling scheme --------------------------------------------
+
+
+def block_docs(prefix, opened, unopened, days_ago):
+    """One arrival block: `opened` docs he opened and bounced, `unopened` he skipped."""
+    out = [doc(f"{prefix}o{i}", saved_at=iso(days_ago), first_opened_at=iso(days_ago))
+           for i in range(opened)]
+    out += [doc(f"{prefix}u{i}", saved_at=iso(days_ago)) for i in range(unopened)]
+    return out
+
+
+def test_a_skip_he_saw_weighs_more_than_one_he_never_saw(store, monkeypatch):
+    """The point of the scheme: 9 of 10 opened means the skip was a real choice."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("scanned", 9, 1, 40) + block_docs("flood", 1, 9, 20))
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    hard, soft = labels["scannedu0"], labels["floodu0"]
+    assert hard[0] == soft[0] == 0
+    assert hard[2] == soft[2] == "ignored"
+    assert hard[1] == pytest.approx(config.EXPOSURE_WEIGHTS["ignored"] * 0.9)
+    assert soft[1] == pytest.approx(config.EXPOSURE_WEIGHTS["ignored"] * 0.1)
+
+
+def test_a_block_he_never_opened_contributes_no_negatives(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("flood", 0, 10, 20))
+    assert recommender_model.derive_labels(store, now=NOW, scheme="exposure") == {}
+
+
+def test_shortlist_opens_are_not_evidence_he_scanned_the_block(store, monkeypatch):
+    """He opened it because we put it in front of him, not because he browsed."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("b", 5, 5, 20))
+    for i in range(5):
+        store.log_event(f"bo{i}", "added", "2026-09-01")
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert "bu0" not in labels                    # organic open rate is 0/5
+    assert labels["bo0"] == (0, config.EXPOSURE_WEIGHTS["bounced"], "bounced")
+
+
+def test_positives_keep_full_weight_however_little_he_scanned(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 10)
+    stock(store, block_docs("flood", 0, 9, 20) + [
+        doc("good", saved_at=iso(20), tags={config.RATE_GOOD_TAG: {}}),
+    ])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert labels["good"] == (1, config.EXPOSURE_WEIGHTS["rated_good"], "rated_good")
+
+
+def test_a_hand_saved_article_is_not_a_saved_positive(store):
+    """Everything hand-saved lives in `later`; only a move out of the feed is a vote."""
+    stock(store, [
+        doc("moved", location="later", category="rss", saved_at=iso(30)),
+        doc("mine", location="later", category="article", saved_at=iso(30)),
+    ])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert labels["moved"] == (1, config.EXPOSURE_WEIGHTS["saved"], "saved")
+    assert "mine" not in labels
+
+
+def test_an_unknown_scheme_fails_loudly(store):
+    with pytest.raises(ValueError):
+        recommender_model.derive_labels(store, now=NOW, scheme="exposre")
+
+
+# -- publication as a feature ------------------------------------------------
+
+
+def test_every_document_lights_exactly_one_publication_column():
+    vector = np.zeros(config.EMBED_DIM, dtype=np.float32)
+    pubs = ["the guardian", "wired"]
+    width = config.EMBED_DIM + 1 + len(recommender_model.CATEGORIES)
+    for name in ("The Guardian ", "wired", "nobody.example", None):
+        x = recommender_model.features(doc("a", site_name=name), vector, pubs)
+        assert len(x) == recommender_model.feature_count(pubs)
+        assert x[width:].sum() == 1.0
+    other = recommender_model.features(doc("a", site_name="nobody.example"), vector, pubs)
+    assert other[-1] == 1.0
+
+
+def test_publications_add_no_age_signal():
+    vector = np.zeros(config.EMBED_DIM, dtype=np.float32)
+    old = recommender_model.features(doc("a", saved_at=iso(900)), vector, ["example.com"])
+    new = recommender_model.features(doc("a", saved_at=iso(0)), vector, ["example.com"])
+    assert np.array_equal(old, new)
+
+
+def test_a_model_scores_with_the_vocabulary_it_was_fitted_on(store, monkeypatch):
+    monkeypatch.setattr(config, "PUBLICATION_MIN_DOCS", 5)
+    good = [doc(f"g{i}", site_name="good.example", location="archive",
+                reading_progress=1.0) for i in range(30)]
+    bad = [doc(f"b{i}", site_name="bad.example", saved_at=iso(30),
+               tags={config.RATE_BAD_TAG: {}}) for i in range(30)]
+    stock(store, good + bad + [doc("new", site_name="good.example")])
+    model, _ = recommender_model.train(store, now=NOW, scheme="exposure", publications=True)
+    assert recommender_model.publications_of(model) == ["bad.example", "good.example"]
+    scores = recommender_model.score_documents(
+        [store.document("new")], store.embeddings(config.EMBED_KEY), model)
+    assert scores["new"] > 0.5
+
+
+def test_train_keeps_an_evaluation_set_out(store):
+    stock(store, [doc(f"r{i}", location="archive", reading_progress=1.0) for i in range(30)]
+          + [doc(f"i{i}", saved_at=iso(30)) for i in range(30)])
+    _, stats = recommender_model.train(store, now=NOW, exclude={"r0", "i0"})
+    assert stats["usable"] == 58
+
+
 # -- what gets embedded ------------------------------------------------------
 
 
@@ -265,6 +377,14 @@ def test_a_superseded_text_recipe_does_not_linger_in_the_store(store):
     assert [d["id"] for d in store.missing_embeddings(config.EMBED_KEY)] == ["a"]
     assert store.forget_other_embeddings(config.EMBED_KEY) == 1
     assert list(store.embeddings(config.EMBED_KEY)) == ["b"]
+
+
+def test_vectors_an_offline_ranker_uses_survive_the_cleanup(store):
+    stock(store, [doc("a")], embed=False)
+    for key in ("old-recipe", "offline#1", config.EMBED_KEY):
+        store.save_embeddings(key, {"a": np.zeros(4, dtype=np.float32)})
+    assert store.forget_other_embeddings(config.EMBED_KEY, "offline#1") == 1
+    assert store.embeddings("offline#1") and not store.embeddings("old-recipe")
 
 
 # -- features ----------------------------------------------------------------
@@ -297,6 +417,17 @@ def test_pick_respects_the_reshow_cooldown(store):
     store.log_event("f0", "added", (NOW - timedelta(days=5)).date().isoformat())
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     assert "f0" not in {d["id"] for d, _, _ in chosen}
+
+
+def test_reinserted_documents_can_be_picked_again_but_others_stay_served(store):
+    """A same-day rerun puts the current list back in the pool, nothing else."""
+    stock(store, [doc(f"f{i}") for i in range(4)])
+    for i in (0, 1):
+        store.log_event(f"f{i}", "added", NOW.date().isoformat())
+    store.log_event("f2", "added", (NOW - timedelta(days=5)).date().isoformat())
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW, reinsert={"f0", "f1"})
+    ids = {d["id"] for d, _, _ in chosen}
+    assert ids == {"f0", "f1", "f3"}
 
 
 def test_pick_fills_both_pools_with_their_own_random_arm(store):
@@ -366,12 +497,13 @@ def test_ranked_picks_skip_near_duplicates(store):
 
 def test_the_random_arm_is_not_deduplicated(store):
     """Skipping duplicates there would stop it being a uniform draw."""
-    store.upsert_documents([doc(f"dupe{i}") for i in range(4)])
+    store.upsert_documents([doc(f"dupe{i}") for i in range(6)])
     same = np.ones(config.EMBED_DIM, dtype=np.float32)
     same /= np.linalg.norm(same)
-    store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(4)})
+    store.save_embeddings(config.EMBED_KEY, {f"dupe{i}": same for i in range(6)})
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
-    assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == 1
+    assert sum(1 for _, slot, _ in chosen if slot == "feed") == 1
+    assert sum(1 for _, slot, _ in chosen if slot == "feed-random") == config.FEED_RANDOM_SLOTS
 
 
 def test_short_reads_are_guaranteed_slots(store):
@@ -392,6 +524,64 @@ def test_the_quota_is_a_floor_not_a_cap(store):
     chosen = shortlist_job.pick(store, None, taste(), now=NOW)
     ranked = [d for d, slot, _ in chosen if slot == "feed"]
     assert len(ranked) == config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
+
+
+class AxisModel:
+    """A stand-in ranker that likes whatever points along one embedding axis."""
+
+    def __init__(self, axis):
+        self.axis = axis
+
+    def predict_proba(self, X):
+        p = 1 / (1 + np.exp(-10 * X[:, self.axis]))
+        return np.column_stack([1 - p, p])
+
+
+def two_camps(store, n=12):
+    """Feed docs a0.. point along axis 0, b0.. along axis 1; same for `later`."""
+    docs, vectors = [], {}
+    for pool, extra in (("", {}), ("l", {"location": "later", "saved_at": iso(400)})):
+        for camp, axis in (("a", 0), ("b", 1)):
+            for i in range(n):
+                d = doc(f"{pool}{camp}{i}", **extra)
+                v = np.zeros(config.EMBED_DIM, dtype=np.float32)
+                v[axis] = 1.0
+                v[2 + i + (n if pool else 0) + (2 * n if camp == "b" else 0)] = 0.8
+                vectors[d["id"]] = v / np.linalg.norm(v)
+                docs.append(d)
+    store.upsert_documents(docs)
+    store.save_embeddings(config.EMBED_KEY, vectors)
+
+
+def test_interleaving_splits_the_ranked_slots_evenly(store):
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(1))
+    slots = [slot for _, slot, _ in chosen]
+    ranked_feed = config.FEED_SLOTS - config.FEED_RANDOM_SLOTS
+    ranked_later = config.LATER_SLOTS - config.LATER_RANDOM_SLOTS
+    assert slots.count("feed") == slots.count("feed-cand") == ranked_feed // 2
+    assert slots.count("later") + slots.count("later-cand") == ranked_later
+    assert abs(slots.count("later") - slots.count("later-cand")) <= 1
+    assert slots.count("feed-random") == config.FEED_RANDOM_SLOTS
+    assert len(chosen) == config.SHORTLIST_SIZE
+
+
+def test_each_ranker_fills_its_slots_with_its_own_favourites(store):
+    """Otherwise the arm comparison is measuring the draft, not the rankers."""
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(1))
+    assert all(d["id"].lstrip("l").startswith("a") for d, s, _ in chosen if s in ("feed", "later"))
+    assert all(d["id"].lstrip("l").startswith("b") for d, s, _ in chosen
+               if s in ("feed-cand", "later-cand"))
+
+
+def test_two_rankers_that_agree_never_pick_the_same_document_twice(store):
+    two_camps(store)
+    chosen = shortlist_job.pick(store, AxisModel(0), None, now=NOW, candidate=AxisModel(0))
+    ids = [d["id"] for d, _, _ in chosen]
+    assert len(ids) == len(set(ids))
+    assert [s for _, s, _ in chosen].count("feed-cand") == \
+        (config.FEED_SLOTS - config.FEED_RANDOM_SLOTS) // 2
 
 
 def test_pick_skips_stale_feed_items(store):
@@ -452,3 +642,251 @@ def test_a_dry_run_writes_nothing(store, tmp_path, monkeypatch):
     page = tmp_path / "html" / html_status_config.RECOMMENDER_PAGE / "index.html"
     assert page.exists()
     assert "dry run" in page.read_text()
+
+
+def test_a_bulk_clear_is_not_a_bounce(store, monkeypatch):
+    """A "mark all seen" burst opens everything at once; he never looked at most of it."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 100)
+    burst = [doc(f"c{i}", saved_at=iso(40), first_opened_at="2026-05-01T10:00:0%dZ" % (i % 10))
+             for i in range(config.BULK_CLEAR_OPENS)]
+    burst[0]["tags"] = {config.RATE_BAD_TAG: {}}
+    stock(store, burst + [doc("alone", saved_at=iso(40), first_opened_at=iso(39))])
+    labels = recommender_model.derive_labels(store, now=NOW, scheme="exposure")
+    assert "c1" not in labels
+    assert labels["c0"][2] == "rated_bad"        # an explicit rating still counts
+    assert labels["alone"][2] == "bounced"
+
+
+@pytest.mark.parametrize("words, progress, read", [
+    (5000, 0.02, True),     # 100 words into a long post
+    (5000, 0.01, False),
+    (300, 0.10, True),      # 10% of a short post
+    (300, 0.09, False),
+])
+def test_any_real_reading_is_a_positive(store, words, progress, read):
+    stock(store, [doc("d", saved_at=iso(20), first_opened_at=iso(19),
+                      word_count=words, reading_progress=progress)])
+    label = recommender_model.derive_labels(store, now=NOW, scheme="exposure")["d"]
+    assert label[2] == ("read" if read else "bounced")
+
+
+def test_an_old_store_keeps_its_vectors_through_the_rekeying(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE embeddings (doc_id TEXT PRIMARY KEY, model TEXT NOT NULL,"
+                " dim INTEGER NOT NULL, vec BLOB NOT NULL, embedded_at TEXT NOT NULL)")
+    old.execute("INSERT INTO embeddings VALUES ('a', 'm', 4, ?, 'now')",
+                (np.ones(4, dtype=np.float32).tobytes(),))
+    old.commit(); old.close()
+    store = Store(str(path))
+    store.save_embeddings("other", {"a": np.zeros(4, dtype=np.float32)})
+    assert list(store.embeddings("m")["a"]) == [1, 1, 1, 1]
+    assert "a" in store.embeddings("other")
+
+
+# -- full text (KYRO-30) -------------------------------------------------------
+
+
+class HtmlClient(RecordingClient):
+    def __init__(self, documents):
+        super().__init__()
+        self.docs, self.kwargs = documents, None
+
+    def documents(self, **kwargs):
+        self.kwargs = kwargs
+        return iter(self.docs)
+
+
+def test_sync_keeps_plain_full_text_and_never_the_html(store):
+    client = HtmlClient([doc("a", html_content="<p>hello <b>world</b></p><script>x()</script>"),
+                         doc("pdf")])
+    shortlist_job.sync(store, client)
+    assert client.kwargs["html"] is True
+    assert store.fulltext(["a", "pdf"]) == {"a": "hello world", "pdf": ""}
+    assert "html_content" not in store.document("a")
+
+
+def test_a_footer_is_cut_only_in_the_second_half():
+    import recommender_embed
+    body = "word " * 50
+    assert recommender_embed.plain_text(f"<p>{body}unsubscribe here</p>").split() == body.split()
+    early = f"<p>you are receiving this because {body}</p>"
+    assert recommender_embed.plain_text(early).endswith("word")
+
+
+def test_a_long_document_is_one_weighted_mean_across_requests(monkeypatch):
+    import recommender_embed
+    monkeypatch.setattr(config, "MISTRAL_CHUNK_WORDS", 10)
+    monkeypatch.setattr(config, "MISTRAL_BATCH_WORDS", 10)
+    calls = []
+
+    def request(texts):
+        calls.append(texts)
+        # first chunk points along x, every later one along y
+        return [[1.0, 0.0] if len(calls) == 1 else [0.0, 1.0] for _ in texts]
+
+    d = doc("long", title="t", author="", site_name="", summary="")
+    vectors = recommender_embed.mistral_embed_documents([d], {"long": "w " * 29}, request)
+    assert len(calls) == 3                          # 30 words in 10-word chunks
+    v = vectors["long"]
+    assert np.isclose(np.linalg.norm(v), 1.0) and v[1] > v[0] > 0
+
+
+def test_a_runaway_full_text_embed_stops_before_spending(store, monkeypatch):
+    import recommender_embed
+    stock(store, [doc("a"), doc("b")], embed=False)
+    store.save_fulltext({"a": "w " * 500, "b": "w " * 500})
+    monkeypatch.setattr(config, "MISTRAL_MAX_WORDS_PER_RUN", 800)
+    monkeypatch.setattr(recommender_embed, "mistral_request",
+                        lambda texts: pytest.fail("called the API"))
+    with pytest.raises(RuntimeError, match="MISTRAL_MAX_WORDS_PER_RUN"):
+        shortlist_job.embed_fulltext(store)
+
+
+def test_each_ranker_scores_with_its_own_vectors(store):
+    docs = [doc(f"f{i}") for i in range(12)]
+    stock(store, docs)
+    rng = np.random.default_rng(3)
+    store.save_embeddings("wide#1", {d["id"]: rng.standard_normal(32).astype(np.float32)
+                                     for d in docs})
+    wide = AxisModel(axis=0)
+    wide.embedding_ = "wide#1"
+    chosen = shortlist_job.pick(store, wide, None, now=NOW)
+    ranked = [d["id"] for d, slot, _ in chosen if slot == "feed"]
+    vectors = store.embeddings("wide#1")
+    best = sorted((d["id"] for d in docs), key=lambda i: -vectors[i][0])
+    assert len(ranked) == 6 and set(ranked) == set(best[:6])
+
+
+def test_a_document_one_ranker_cannot_see_is_not_eligible(store):
+    docs = [doc(f"f{i}") for i in range(12)]
+    stock(store, docs)
+    store.save_embeddings("wide#1", {d["id"]: np.ones(4, dtype=np.float32)
+                                     for d in docs if d["id"] != "f0"})
+    wide = AxisModel(axis=0)
+    wide.embedding_ = "wide#1"
+    chosen = shortlist_job.pick(store, wide, None, now=NOW)
+    assert "f0" not in {d["id"] for d, _, _ in chosen}
+
+
+# -- damped random draw (KYRO-30) ------------------------------------------------
+
+
+def test_the_random_feed_draw_damps_a_flooding_publication():
+    import random
+    pool = ([doc(f"flood{i}", site_name="bloomberg.com") for i in range(100)]
+            + [doc(f"one{i}", site_name=f"site{i}.org") for i in range(10)])
+    rng = random.Random(0)
+    flood = sum(shortlist_job.damped_sample(pool, 1, pool, rng)[0]["site_name"] == "bloomberg.com"
+                for _ in range(2000))
+    # uniform would give 100/110 = 91%; log(101) / (log(101) + 10 log(2)) = 40%
+    assert 0.33 < flood / 2000 < 0.47
+
+
+def test_the_damped_draw_never_repeats_and_stops_at_the_pool():
+    import random
+    pool = [doc(f"d{i}", site_name="a" if i % 2 else "b") for i in range(5)]
+    drawn = shortlist_job.damped_sample(pool, 3, pool, random.Random(1))
+    assert len({d["id"] for d in drawn}) == 3
+    assert len(shortlist_job.damped_sample(pool, 9, pool, random.Random(1))) == 5
+
+
+# -- age at exposure (KYRO-30) ---------------------------------------------------
+
+
+def ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_exposure_age_is_the_first_look_not_the_age_now(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 100)
+    stock(store, [
+        doc("opened", saved_at=ago(30), first_opened_at=ago(27)),       # opened 3 days in
+        doc("shown", saved_at=ago(10)),                                 # shortlisted today
+        doc("hand", category="article", location="later", saved_at=ago(50)),  # never looked at
+    ], embed=False)
+    store.log_event("shown", "added", "c")
+    ages = recommender_model.exposure_ages(store)
+    assert ages["opened"] == pytest.approx(3, abs=0.01)
+    assert ages["shown"] == pytest.approx(10, abs=0.01)
+    assert ages["hand"] == pytest.approx(np.median([ages["opened"], ages["shown"]]), abs=0.01)
+
+
+def test_an_unopened_item_is_dated_by_the_scan_of_its_block(store, monkeypatch):
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 3)
+    stock(store, [doc("a", saved_at=ago(9), first_opened_at=ago(8)),
+                  doc("b", saved_at=ago(9), first_opened_at=ago(4)),
+                  doc("skipped", saved_at=ago(9))], embed=False)
+    # he next went through the block a day after it arrived
+    assert recommender_model.exposure_ages(store)["skipped"] == pytest.approx(1, abs=0.01)
+
+
+def test_an_age_aware_ranker_learns_that_stale_is_worse(store, monkeypatch):
+    """Same content; read when fresh, passed on when a week old."""
+    monkeypatch.setattr(config, "EXPOSURE_BLOCK", 1000)
+    # opens spread out: 20 in one minute would be a bulk clear
+    docs = ([doc(f"fresh{i}", saved_at=ago(40 + i / 100), first_opened_at=ago(40 + i / 100),
+                 reading_progress=0.9)
+             for i in range(30)]
+            + [doc(f"stale{i}", saved_at=ago(47), first_opened_at=ago(40 + i / 100),
+                   reading_progress=0.0,
+                   word_count=800) for i in range(30)])
+    stock(store, docs)
+    same = store.embeddings(config.EMBED_KEY)["fresh0"]
+    store.save_embeddings(config.EMBED_KEY, {d["id"]: same for d in docs})
+    model, _ = recommender_model.train(store, scheme="exposure", age=True)
+    candidates = [doc("today", saved_at=ago(0)), doc("lastweek", saved_at=ago(7))]
+    store.save_embeddings(config.EMBED_KEY, {"today": same, "lastweek": same})
+    scores = recommender_model.score_documents(candidates, store.embeddings(config.EMBED_KEY), model)
+    assert scores["today"] > scores["lastweek"]
+
+
+def test_the_age_term_keeps_the_attribution_exact(store, monkeypatch):
+    import shortlist_stats
+    test_an_age_aware_ranker_learns_that_stale_is_worse(store, monkeypatch)
+    model, _ = recommender_model.train(store, scheme="exposure", age=True)
+    embeddings = store.embeddings(config.EMBED_KEY)
+    baseline = shortlist_stats.baseline_features(
+        store.documents(), embeddings, ages=recommender_model.exposure_ages(store))
+    old = store.document("lastweek") or doc("lastweek", saved_at=ago(7))
+    attr = shortlist_stats.attribution(old, embeddings["lastweek"], model, baseline)
+    score = recommender_model.score_documents([old], embeddings, model)["lastweek"]
+    assert attr["probability"] == pytest.approx(score, abs=1e-6)
+    assert attr["contributions"]["age"] < 0
+
+
+# -- digests -----------------------------------------------------------------
+
+def digest(doc_id, series, day, **kwargs):
+    return doc(doc_id, title=f"{series} - 2026-10-{day:02d}", author=config.DIGEST_AUTHOR,
+               category=config.DIGEST_CATEGORY, saved_at=iso(10 - day), **kwargs)
+
+
+def test_only_the_newest_unarchived_digest_of_each_series_is_privileged(store):
+    stock(store, [
+        digest("a1", "AI Digest", 1), digest("a2", "AI Digest", 2),
+        digest("g1", "Geo Digest", 1), digest("g2", "Geo Digest", 2, location="archive"),
+        doc("x", author="someone else", category="email", title="AI Digest - 2026-10-03"),
+    ])
+    assert {d["id"] for d in shortlist_job.privileged_digests(store)} == {"a2"}
+
+
+def test_digests_get_rate_good_in_reader_and_locally_but_other_mail_does_not(store):
+    stock(store, [digest("a1", "AI Digest", 1, tags={"keep": {}}), doc("x", category="email")])
+
+    class Client:
+        sent = None
+        def bulk_set_tags(self, updates):
+            Client.sent = updates
+
+    assert shortlist_job.tag_digests(store, Client()) == 1
+    assert Client.sent == {"a1": ["keep", config.RATE_GOOD_TAG]}
+    assert config.RATE_GOOD_TAG in recommender_model._tags(store.document("a1"))
+    assert shortlist_job.tag_digests(store, Client()) == 0      # idempotent
+
+
+def test_privileged_digests_never_take_a_regular_slot(store):
+    stock(store, [digest("a1", "AI Digest", 1)] + [doc(f"f{i}") for i in range(20)])
+    chosen = shortlist_job.pick(store, None, taste(), now=NOW, skip={"a1"})
+    assert "a1" not in {d["id"] for d, _, _ in chosen}

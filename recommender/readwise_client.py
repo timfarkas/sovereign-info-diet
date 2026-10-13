@@ -74,11 +74,15 @@ class ReadwiseClient:
             raise ReadwiseError(f"auth check returned {response.status_code}")
         return True
 
-    def documents(self, location=None, updated_after=None, tag=None, category=None):
-        """Yield documents, following the cursor until the last page."""
+    def documents(self, location=None, updated_after=None, tag=None, category=None,
+                  html=False):
+        """Yield documents, following the cursor until the last page.
+
+        `html` adds each document's `html_content` -- its full text.
+        """
         cursor = None
         while True:
-            params = {}
+            params = {"withHtmlContent": "true"} if html else {}
             if location:
                 params["location"] = location
             if updated_after:

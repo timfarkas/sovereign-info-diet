@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SQLite store for the shortlist recommender.
 
-One file, three tables: the documents as Readwise last reported them, their
+One file: the documents as Readwise last reported them, their full text, their
 embeddings, and the log of what we shortlisted and what became of it. Labels are
 NOT stored -- they are derived from these tables on every run, so changing the
 labelling rules never leaves stale labels behind.
@@ -38,11 +38,12 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS embeddings (
-    doc_id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
     model TEXT NOT NULL,
     dim INTEGER NOT NULL,
     vec BLOB NOT NULL,
-    embedded_at TEXT NOT NULL
+    embedded_at TEXT NOT NULL,
+    PRIMARY KEY (doc_id, model)
 );
 
 CREATE TABLE IF NOT EXISTS shortlist_events (
@@ -53,6 +54,12 @@ CREATE TABLE IF NOT EXISTS shortlist_events (
     score REAL,
     cycle TEXT NOT NULL,           -- ISO date of the run
     created_at TEXT NOT NULL
+);
+
+-- plain full text, footer cut: what the full-text embedding reads
+CREATE TABLE IF NOT EXISTS fulltext (
+    doc_id TEXT PRIMARY KEY,
+    body TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -80,7 +87,23 @@ class Store:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        self._key_embeddings_by_model()
         self.conn.executescript(SCHEMA)
+
+    def _key_embeddings_by_model(self):
+        """Before KYRO-30 a document had one vector, keyed by doc_id alone, so a
+        second embedding model overwrote the first. Rebuild with (doc_id, model)."""
+        pk = [r["name"] for r in self.conn.execute("PRAGMA table_info(embeddings)") if r["pk"]]
+        if pk != ["doc_id"]:
+            return
+        self.conn.executescript("""
+            ALTER TABLE embeddings RENAME TO embeddings_old;
+            CREATE TABLE embeddings (
+                doc_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+                vec BLOB NOT NULL, embedded_at TEXT NOT NULL, PRIMARY KEY (doc_id, model));
+            INSERT INTO embeddings SELECT doc_id, model, dim, vec, embedded_at FROM embeddings_old;
+            DROP TABLE embeddings_old;
+        """)
 
     def close(self):
         self.conn.close()
@@ -116,11 +139,34 @@ class Store:
             sql += " WHERE " + " AND ".join(clauses)
         return [dict(r) for r in self.conn.execute(sql, params)]
 
+    def set_tags(self, doc_id, tags):
+        """Mirror a tag write we just made to Reader, so tonight's fit sees it."""
+        self.conn.execute("UPDATE documents SET tags = ? WHERE id = ?",
+                          (json.dumps(sorted(tags)), doc_id))
+        self.conn.commit()
+
     def document(self, doc_id):
         row = self.conn.execute(
             "SELECT * FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def save_fulltext(self, bodies):
+        """bodies: {doc_id: plain text}"""
+        self.conn.executemany("INSERT OR REPLACE INTO fulltext (doc_id, body) VALUES (?, ?)",
+                              list(bodies.items()))
+        self.conn.commit()
+
+    def fulltext(self, doc_ids):
+        """{doc_id: plain text} for those of doc_ids that have any."""
+        out = {}
+        ids = list(doc_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            out.update(self.conn.execute(
+                f"SELECT doc_id, body FROM fulltext WHERE doc_id IN ({','.join('?' * len(chunk))})",
+                chunk).fetchall())
+        return out
 
     # -- embeddings ----------------------------------------------------------
 
@@ -145,9 +191,10 @@ class Store:
         )
         self.conn.commit()
 
-    def forget_other_embeddings(self, model):
+    def forget_other_embeddings(self, *keep):
         """Drop vectors from superseded text recipes, so the file stops growing."""
-        cursor = self.conn.execute("DELETE FROM embeddings WHERE model != ?", (model,))
+        marks = ",".join("?" * len(keep))
+        cursor = self.conn.execute(f"DELETE FROM embeddings WHERE model NOT IN ({marks})", keep)
         self.conn.commit()
         return cursor.rowcount
 

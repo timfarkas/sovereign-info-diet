@@ -1,7 +1,7 @@
 # State of this box
 
 What is running, what it is doing, and what is known to be wrong with it.
-Last updated 2026-09-30.
+Last updated 2026-10-08.
 
 ## Two independent jobs
 
@@ -113,10 +113,28 @@ with the digest). Local *embeddings* fit comfortably. Keep any single job under
 - **head**: `LogisticRegression`, L2, `C=1.0`, `class_weight="balanced"`, plus
   per-tier sample weights. 392 features: the embedding, `log1p(word_count)`, and
   seven category one-hots. Retrained from scratch nightly (milliseconds).
-- **slate**: 10 documents — 7 fresh feed (1 an unranked random draw) and 3
+- **slate**: 12 documents — 9 fresh feed (3 unranked random draws) and 3
   resurfaced from `later` (1 unranked). Ranked picks are deduplicated by cosine
   ≥ 0.93 and reserve a floor of short reads; the random arms are neither
   deduplicated nor length-constrained, because they are the measurement.
+- **full text** (since 2026-10-09): sync pulls `html_content`, keeps it as
+  plain text (footer cut) in the store's `fulltext` table, and `mistral-embed`
+  embeds new documents: header + body in 1,500-word chunks, word-weighted mean,
+  1024-dim, key `mistral-embed#fulltext1`. Paid API (~$0.1/M tokens, ~$0.08 a
+  300-doc night), `MISTRAL_API_KEY` from `.env`; a run over
+  `MISTRAL_MAX_WORDS_PER_RUN` stops instead of spending.
+- **two rankers, interleaved** (since KYRO-30): `config.RANKERS` holds a
+  `control` and a `candidate`. Since 2026-10-09 both use exposure-weighted
+  labels + a site_name one-hot; the control is fitted on the mistral full-text
+  vectors, the candidate on bge -- so the live arms test the full text. Both
+  also take age at exposure (see Invariants).
+- **random feed draw** is damped against floods: a site with n posts in the
+  pool draws with total mass log(1+n) (`config.RANDOM_PUBLICATION_MASS`). The
+  pre-KYRO-30 ranker (`current` labels, bge) is an offline row only. Each
+  model carries its vector key as `embedding_`. Each pool's ranked slots are
+  team-drafted between them; candidate picks carry slot `<pool>-cand`. Verdict lives on
+  <http://192.168.2.6:8080/recommender/refinement/>; what the encoder reads is
+  on <http://192.168.2.6:8080/recommender/summaries/>.
 
 ### Numbers as of 2026-09-24
 
@@ -170,11 +188,34 @@ If this gets attempted again, the way to do it is online: keep the labels and
 A/B the two rankers against the random arms over a couple of weeks. Do not
 trust an offline AUC to adjudicate it -- see "known wrong" #1 below.
 
+## The October RSS flood (KYRO-30, measured 2026-10-08)
+
+From 2026-09-30 the feed went from ~35 arrivals/day to ~300, with ~0 organic
+opens. Under the `current` labels every one of those becomes a 0.3 "ignored"
+negative after four days, and they are mostly short news -- so the nightly
+holdout filled with easy negatives: AUC 0.74 → 0.81 while a word-count
+baseline on the same split went 0.57 → 0.77. The rise was "short news is
+ignored", not better ranking.
+
+Longer history matters too: Feb–May he opened ~90% of feed arrivals (nearly
+all with zero reading progress -- seen-and-skipped), Jun–Sep ~3-5%. The
+`exposure` scheme turns the former into real 0.1 negatives and scales every
+negative by its 100-item block's organic open rate. On common held-out sets
+(`recommender_refine.py`): triage AUC control 0.732 vs candidate 0.805; on the
+140 shown items both are within noise (0.55 / 0.60) and word count alone gets
+0.63. A publication one-hot on the `current` labels learns "Guardian = bad"
+from the flood -- only use it with exposure labels. The candidate's Guardian
+weight is still negative (-1.8), but that comes from 9 explicit `rate:bad`.
+
 ## Invariants — things that will silently break if changed
 
-- **Age must never become a model feature.** Old → archived → read, so age
-  predicts the label almost perfectly and yields a model that ranks by "is old"
-  while scoring beautifully. Recency gates candidacy instead. There is a test.
+- **Age as of now must never become a model feature.** Old → archived → read, so
+  today's age predicts the label almost perfectly and yields a model that ranks
+  by "is old" while scoring beautifully. There is a test. What rankers do use
+  (since 2026-10-09, `"age": True`) is *age at exposure*: days from arrival to
+  his first look (first open, first shortlisting, or the next organic open in
+  its arrival block; median if none), which is frozen at the decision. At
+  scoring time it is now − saved_at. Learned ≈ −0.22 per log-day.
 - **Each random arm must be drawn from the same pool as the ranked picks it is
   compared against.** An earlier version drew random from `later` while ranking
   `feed` and called it unbiased; it was not.
@@ -211,7 +252,8 @@ trust an offline AUC to adjudicate it -- see "known wrong" #1 below.
 cd recommender
 ./run_shortlist.sh --dry-run      # decide everything, write nothing
 ./run_shortlist.sh --full-sync    # re-pull every document
-.venv-rec/bin/python -m pytest test_shortlist.py --timeout 5
+.venv-rec/bin/python -m pytest --timeout 5
+.venv-rec/bin/python recommender_refine.py   # control vs candidate, offline, writes nothing
 ```
 
 Rating documents `rate:good` / `rate:bad` in Reader is the highest-value thing a
