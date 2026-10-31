@@ -80,6 +80,8 @@ def test_render_splits_top_picks_from_the_rest_and_hides_low_scores():
     top, rest = page.split("<h3>Also this week</h3>")
     assert "Event 0" in top and "Event 1" in top and "why 0" in top
     assert "Event 2" in rest and "A talk." in rest
+    assert "<strong>Mon 2 Nov, 19:00</strong>" in top        # top picks carry the day
+    assert "<strong>19:00</strong>" in rest                   # the day is the heading
     assert "Event 3" not in page
 
 

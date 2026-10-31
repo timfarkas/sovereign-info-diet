@@ -224,17 +224,22 @@ def keep(events: List[Dict], start: date, end: date) -> Tuple[List[Dict], Dict[s
 # rendering
 # =============================================================================
 
-def _when(e: Dict) -> str:
+def _when(e: Dict, with_day: bool) -> str:
+    """"Tue 3 Nov, 19:00"; just the time under a day heading; "all day" if no time."""
     w = e["when"]
+    time = f"{w:%H:%M}" if len(e["start"].strip()) > 10 else ""
+    if not with_day:
+        return time or "all day"
     day = f"{w:%a} {w.day} {w:%b}"
-    return day if len(e["start"].strip()) <= 10 else f"{day}, {w:%H:%M}"
+    return f"{day}, {time}" if time else day
 
 
 def _line(e: Dict, why: bool) -> str:
+    """A top pick (`why`: dated, with the scorer's reason) or a by-day line."""
     esc = html.escape
     where = f" — {esc(e['venue'])}" if e.get("venue") else ""
     body = esc(e["why"]) if why else esc(e["description"])
-    return (f'<li><strong>{esc(_when(e))}</strong> — '
+    return (f'<li><strong>{esc(_when(e, with_day=why))}</strong> — '
             f'<a href="{esc(e["url"], quote=True)}">{esc(e["title"])}</a>'
             f'{where}. {body} <em>[{esc(e["category"])}, {e["score"]}/10]</em></li>')
 
