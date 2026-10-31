@@ -24,5 +24,11 @@ $PY rss_scraper.py    || echo "[pipeline] rss_scraper.py exited $? -- continuing
 # summaries in one directory, "mail the newest one" is ambiguous.
 $PY digest_run.py "$@"
 rc=$?
+
+# Weekly events digest. Decides for itself whether it is due (Sunday in the
+# city's timezone, or a missed Sunday), so on six nights out of seven this is a
+# one-line skip. Its failure is logged but does not change the night's rc --
+# that stays the topic digests' verdict.
+$PY events_digest.py "$@" || echo "[pipeline] events_digest.py exited $? -- no events digest this run"
 echo "=== $(date -u +%FT%TZ) pipeline end (rc=$rc) ==="
 exit $rc
