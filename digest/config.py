@@ -124,11 +124,15 @@ POSTS_PER_SUBREDDIT = POSTS_TO_ANALYZE // len(SUBREDDITS)
 # --- events digest (events_digest.py) ----------------------------------------
 # A weekly "what's on in <city>" mail. Unlike the topic digests it reads no
 # scraped corpus: the model researches each category itself with web search,
-# then scores every event it found against the interests below. Change the city
-# by changing these two lines -- nothing else names it.
-EVENTS_CITY = "Berlin"
-EVENTS_TIMEZONE = "Europe/Berlin"
-EVENTS_WEEKDAY = 6               # 0=Mon .. 6=Sun, in EVENTS_TIMEZONE
+# then scores every event it found against the interests.
+#
+# WHICH city and WHICH interests live in events_config.json at the repo root,
+# not here: they say where the reader is and what he cares about, and this is a
+# public repo. That file is gitignored; copy events_config.example.json to start
+# one. A run with no such file fails loudly rather than researching the example.
+from pathlib import Path as _Path
+EVENTS_CONFIG_PATH = _Path(__file__).resolve().parent.parent / "events_config.json"
+EVENTS_WEEKDAY = 6               # 0=Mon .. 6=Sun, in the config's timezone
 EVENTS_WINDOW_DAYS = 7           # events starting from today through today+6
 EVENTS_TOP_PICKS = 8             # at most this many in "top picks"
 EVENTS_MIN_SCORE = 6             # 0-10; below this an event is not mailed at all.
@@ -139,37 +143,3 @@ EVENTS_COST_CEILING_USD = 2.50   # warns past this. First run: $1.89, 112 search
 # the published price for reasoning models as of 2026-10; re-check if the
 # printed cost and the billing page disagree.
 WEB_SEARCH_PRICE_PER_CALL = 0.01
-
-# One web-searched research call per category. `interests` is what the scorer
-# ranks against (verbatim from Tim's brief, KYRO-38); `hints` are places worth
-# checking in this city, not a whitelist -- the model is told to search wider.
-EVENTS_CATEGORIES = (
-    {"name": "Biohacking & enhancement medicine",
-     "interests": "biohacking, positive medicine, enhancement medicine, neuro enhancement",
-     "hints": "Luma and Meetup biohacking/longevity groups, quantified-self meetups, "
-              "longevity and neurotech founder events, Charité/BIH public lectures"},
-    {"name": "Psychedelics",
-     "interests": "psychedelics",
-     "hints": "MIND Foundation, psychedelic society meetups, integration circles, "
-              "psychedelic science talks and conferences"},
-    {"name": "Metamodernism, active inference & collective intelligence",
-     "interests": "metamodernism, active inference, collective intelligence",
-     "hints": "metamodern / game-B / sensemaking circles, free-energy-principle and "
-              "active inference reading groups, collective-intelligence and "
-              "deliberation-tech meetups, philosophy salons"},
-    {"name": "AI safety, EA & rationalism",
-     "interests": "AI safety, effective altruism, rationalism",
-     "hints": "LessWrong and ACX meetups (lesswrong.com community pages, ACX "
-              "Meetups Everywhere), EA Berlin, AI safety reading groups and "
-              "hackathons, AI governance talks"},
-    {"name": "Alt tech, open source & the sovereign internet",
-     "interests": "alt tech, indie tech, open source, sovereign internet "
-                  "(AT protocol, IRC, fediverse, self-hosting and the like)",
-     "hints": "c-base, xHain, hackerspaces, Prototype Fund, FOSS meetups, "
-              "AT Protocol / Bluesky dev meetups, fediverse and self-hosting meetups, "
-              "local-first and indie-web events"},
-    {"name": "Cyber security",
-     "interests": "cyber security",
-     "hints": "Chaos Computer Club (CCC) Berlin events, OWASP Berlin, security "
-              "meetups, CTFs, BSides"},
-)

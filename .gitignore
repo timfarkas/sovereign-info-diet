@@ -34,3 +34,4 @@ logs/
 # Recommender
 .venv-rec/
 .model-cache/
+!events_config.example.json

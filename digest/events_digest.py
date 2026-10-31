@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Weekly events digest: what is on in EVENTS_CITY over the coming week.
+"""Weekly events digest: what is on in the configured city over the coming week.
 
 Not a topic row in topics.py, on purpose. A topic summarizes a corpus the
 scrapers already put on disk; this one has no corpus. It RESEARCHES: one
-web-searching model call per category in config.EVENTS_CATEGORIES, each
+web-searching model call per category in events_config.json, each
 returning structured events, then one tool-free call that scores every event
 0-10 against Tim's interests. The mail is rendered here, in code, from those
 two outputs -- so every link in it is a URL a search returned, never one a
@@ -39,6 +39,10 @@ import prompts
 from x_scraper import is_blocked_link
 
 STATE_PATH = Path("extracts/events_state.json")
+
+# {"city", "timezone", "categories": [{"name", "interests", "hints"}]}, from
+# config.EVENTS_CONFIG_PATH -- private, so not in this public repo. Set by main().
+SETTINGS: Dict = {}
 OUT_DIR = Path("extracts/summaries")
 
 EVENT_SCHEMA = {
@@ -78,11 +82,30 @@ SCORE_SCHEMA = {
 
 
 # =============================================================================
+# settings
+# =============================================================================
+
+def load_settings(path: Path) -> Dict:
+    """The private city/interests file. Missing or malformed is fatal: a run
+    that silently fell back to the example would research someone else's week."""
+    if not path.exists():
+        raise SystemExit(f"[events] no {path} -- copy events_config.example.json "
+                         f"there and fill in the city and interests")
+    s = json.loads(path.read_text())
+    ZoneInfo(s["timezone"])                       # unknown name -> loud error
+    assert s["city"] and s["categories"], f"{path}: city and categories required"
+    for c in s["categories"]:
+        missing = {"name", "interests", "hints"} - c.keys()
+        assert not missing, f"{path}: category {c.get('name')!r} lacks {missing}"
+    return s
+
+
+# =============================================================================
 # when
 # =============================================================================
 
 def today_local(now: datetime) -> date:
-    return now.astimezone(ZoneInfo(config.EVENTS_TIMEZONE)).date()
+    return now.astimezone(ZoneInfo(SETTINGS["timezone"])).date()
 
 
 def window(today: date) -> Tuple[date, date]:
@@ -140,7 +163,7 @@ def cost_of(response) -> Tuple[float, int]:
 
 def research(client, category: Dict, start: date, end: date) -> Dict:
     prompt = prompts.EVENTS_RESEARCH.format(
-        city=config.EVENTS_CITY, timezone=config.EVENTS_TIMEZONE,
+        city=SETTINGS["city"], timezone=SETTINGS["timezone"],
         start=start.isoformat(), end=end.isoformat(),
         category=category["name"], interests=category["interests"],
         hints=category["hints"])
@@ -157,7 +180,7 @@ def research(client, category: Dict, start: date, end: date) -> Dict:
 
 
 def score(client, events: List[Dict]) -> Tuple[Dict[int, Dict], float]:
-    interests = "; ".join(c["interests"] for c in config.EVENTS_CATEGORIES)
+    interests = "; ".join(c["interests"] for c in SETTINGS["categories"])
     listing = "\n".join(
         json.dumps({"id": e["id"], "title": e["title"], "start": e["start"],
                     "venue": e["venue"], "organizer": e["organizer"],
@@ -165,7 +188,7 @@ def score(client, events: List[Dict]) -> Tuple[Dict[int, Dict], float]:
                    ensure_ascii=False)
         for e in events)
     r = _respond(client, input=prompts.EVENTS_SCORE.format(
-                     city=config.EVENTS_CITY, interests=interests, events=listing),
+                     city=SETTINGS["city"], interests=interests, events=listing),
                  text={"format": {"type": "json_schema", "name": "scores",
                                   "schema": SCORE_SCHEMA, "strict": True}})
     scores = {s["id"]: s for s in json.loads(r.output_text)["scores"]}
@@ -254,7 +277,7 @@ def render(events: List[Dict], start: date, end: date, footer: str,
     rest = sorted((e for e in shown if e["id"] not in top_ids),
                   key=lambda e: e["when"])
 
-    parts = [f"<h1>{html.escape(config.EVENTS_CITY)} Events Digest - "
+    parts = [f"<h1>{html.escape(SETTINGS["city"])} Events Digest - "
              f"{start.isoformat()}</h1>",
              f"<p><em>{start:%a} {start.day} {start:%b} to {end:%a} {end.day} "
              f"{end:%b}, ranked by fit with your interests.</em></p>",
@@ -283,6 +306,8 @@ def main(argv: List[str] = None) -> int:
     mail = "--dry-run" not in argv and "--no-mail" not in argv
     force = "--force" in argv
 
+    SETTINGS.clear()
+    SETTINGS.update(load_settings(config.EVENTS_CONFIG_PATH))
     now = datetime.now().astimezone()
     today = today_local(now)
     state = load_state()
@@ -305,7 +330,7 @@ def main(argv: List[str] = None) -> int:
             return {"events": [], "cost": 0.0, "searches": 0}
 
     with ThreadPoolExecutor(max_workers=3) as pool:
-        found = list(pool.map(one, config.EVENTS_CATEGORIES))
+        found = list(pool.map(one, SETTINGS["categories"]))
     raw = [e for f in found for e in f["events"]]
     cost = sum(f["cost"] for f in found)
     searches = sum(f["searches"] for f in found)
@@ -313,7 +338,7 @@ def main(argv: List[str] = None) -> int:
     events, dropped = keep(raw, start, end)
     print(f"[events] {len(raw)} found, {len(events)} kept, dropped {dropped}")
     if not events:
-        # Zero events in a city like Berlin is a broken run, not a quiet week.
+        # Zero events in a real city is a broken run, not a quiet week.
         print("[events] nothing survived -- refusing to mail an empty digest")
         return 1
 
@@ -353,7 +378,7 @@ def main(argv: List[str] = None) -> int:
     if not mail:
         return 0
     from send_notification import recipients_for, send_email
-    subject = f"{config.EVENTS_CITY} Events Digest - {today.isoformat()}"
+    subject = f"{SETTINGS['city']} Events Digest - {today.isoformat()}"
     if not send_email(subject, page, to_email=recipients_for(full=False)):
         return 1
     STATE_PATH.write_text(json.dumps({"last_success": today.isoformat()}))

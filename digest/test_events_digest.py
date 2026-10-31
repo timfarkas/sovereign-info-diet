@@ -7,12 +7,23 @@ is exercised end to end without the network.
 
 import json
 from datetime import date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import config
 import events_digest as ev
+
+EXAMPLE = Path(__file__).resolve().parent.parent / "events_config.example.json"
+
+
+@pytest.fixture(autouse=True)
+def settings(monkeypatch):
+    """Every test runs on the committed example, never on the private file."""
+    monkeypatch.setattr(config, "EVENTS_CONFIG_PATH", EXAMPLE)
+    ev.SETTINGS.clear()
+    ev.SETTINGS.update(ev.load_settings(EXAMPLE))
 
 
 # -- cadence --------------------------------------------------------------------
@@ -55,7 +66,7 @@ def test_keep_drops_out_of_window_bad_dates_social_links_and_duplicates():
            event("Early", start="2026-10-30T10:00"),
            event("Vague", start="sometime in November"),
            event("Tweet", url="https://x.com/someone/status/1"),
-           event("Thread", url="https://old.reddit.com/r/berlin/1"),
+           event("Thread", url="https://old.reddit.com/r/somecity/1"),
            event("Last day", start="2026-11-07", url="https://luma.com/last")]
     kept, dropped = ev.keep(raw, SUN, date(2026, 11, 7))
     assert [e["title"] for e in kept] == ["Talk", "Last day"]
@@ -117,7 +128,7 @@ class FakeClient:
         usage = SimpleNamespace(input_tokens=1000, output_tokens=100,
                                 input_tokens_details=SimpleNamespace(cached_tokens=0))
         if tools:
-            name = next(c["name"] for c in config.EVENTS_CATEGORIES
+            name = next(c["name"] for c in ev.SETTINGS["categories"]
                         if f"category: {c['name']}." in input)
             found = self.by_category.get(name, [])
             if isinstance(found, Exception):
@@ -157,7 +168,7 @@ def run(tmp_path, monkeypatch):
     return go
 
 
-CATS = [c["name"] for c in config.EVENTS_CATEGORIES]
+CATS = [c["name"] for c in ev.load_settings(EXAMPLE)["categories"]]
 
 
 def test_happy_path_mails_tim_alone_under_a_digest_series_subject(run):
@@ -165,7 +176,7 @@ def test_happy_path_mails_tim_alone_under_a_digest_series_subject(run):
                          CATS[1]: [event("B", url="https://luma.com/b")]})
     assert run(client) == 0
     (subject, body, to), = run.sent
-    assert subject == f"{config.EVENTS_CITY} Events Digest - 2026-11-01"
+    assert subject == "Amsterdam Events Digest - 2026-11-01"
     assert to == ["tim@example.org"]          # never EMAIL_TO_EXTRA
     assert "Top picks" in body and ">A</a>" in body and ">B</a>" in body
     assert json.loads(ev.STATE_PATH.read_text()) == {"last_success": "2026-11-01"}
@@ -212,3 +223,26 @@ def test_a_failed_send_leaves_it_due(run, monkeypatch):
     monkeypatch.setattr(send_notification, "send_email", lambda *a, **k: False)
     assert run(FakeClient({CATS[0]: [event()]})) == 1
     assert not ev.STATE_PATH.exists()
+
+
+def test_a_missing_private_config_is_fatal_not_a_fallback(run, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "EVENTS_CONFIG_PATH", tmp_path / "nope.json")
+    with pytest.raises(SystemExit, match="events_config.example.json"):
+        run(None)
+    assert run.sent == []
+
+
+def test_a_category_without_interests_is_rejected(tmp_path):
+    bad = tmp_path / "c.json"
+    bad.write_text(json.dumps({"city": "X", "timezone": "Europe/Berlin",
+                               "categories": [{"name": "a", "hints": ""}]}))
+    with pytest.raises(AssertionError, match="interests"):
+        ev.load_settings(bad)
+
+
+def test_the_private_config_is_gitignored_and_the_example_is_not():
+    import subprocess
+    root = EXAMPLE.parent
+    check = lambda name: subprocess.run(["git", "check-ignore", "-q", name],
+                                        cwd=root).returncode == 0
+    assert check("events_config.json") and not check("events_config.example.json")

@@ -92,8 +92,8 @@ Known and deliberate:
 
 ## The events digest
 
-Weekly, Sunday, from the 01:00 UTC pipeline (02:00 Berlin, 20:00/21:00 Saturday in
-Boston), before the 02:00 shortlist run, so it can reach that night's shortlist.
+Weekly, Sunday, from the 01:00 UTC pipeline (02:00-03:00 in central Europe, Saturday evening in
+the US), before the 02:00 shortlist run, so it can reach that night's shortlist.
 It does its own web research: 6 categories, one web-searching call each, run 3 at a
 time. First run, 2026-10-31: 3m35s, 70 MB peak, 112 searches, 51 events found and
 49 kept, **$1.89** (about $1.12 of that is search fees, assuming $10 per 1k calls).
