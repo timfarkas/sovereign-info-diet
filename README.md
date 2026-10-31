@@ -130,6 +130,37 @@ Three mail tiers, checked in this order: `--dry-run`/`--no-mail` sends nothing;
 `--test` sends to `EMAIL_TO` only; otherwise (the nightly cron path) it sends
 to `EMAIL_TO` plus every address in `EMAIL_TO_EXTRA` (.env).
 
+#### the events digest
+
+`digest/events_digest.py` is the odd one out: a weekly "what's on in <city>
+this week" mail with no scraped corpus behind it. It runs as the last leg of
+`run_pipeline.sh` every night and decides for itself whether it is due: it is due
+when nothing has been sent since the most recent Sunday in the city's timezone, so
+a failed Sunday is retried on Monday rather than skipped.
+
+1. **research** -- one `gpt-6-sol` call per category in `events_config.json`, using
+   OpenAI's `web_search` tool and returning structured events (title, start, venue,
+   url, description).
+2. **clean** -- keep events that start inside the window and are not social-platform
+   links, then drop duplicates by cleaned URL or by (title, day).
+3. **score** -- one call with no tools rates every event 0-10 against the interests.
+4. **render** -- in code, not by the model: top picks by score, then the rest by
+   day. So every link in the mail is a URL a search returned.
+
+The city, its timezone and the categories with their interests live in
+`events_config.json` at the repo root. That file is **gitignored**, since it says
+where the reader is and what he cares about. Copy `events_config.example.json`
+to start one. With no such file the run exits loudly; it never falls back to the
+example. Thresholds and cost knobs stay in `config.py`. It mails `EMAIL_TO` only,
+never `EMAIL_TO_EXTRA`, because the ranking is for one person. The subject is
+`<City> Events Digest - <date>`, which is what the recommender keys on to treat it
+as a digest series. It shares `--dry-run`/`--no-mail`/`--force` with
+`digest_run.py`, so `run_pipeline.sh --force` forces both.
+
+```bash
+python events_digest.py --dry-run --force    # research + score, save the page, mail nothing
+```
+
 #### subscribed feeds
 
 Two independent paths, not a primary and a fallback:
@@ -327,7 +358,7 @@ chart is backed by a `<details>` table.
 ### tests
 
 ```bash
-cd digest && .venv/bin/python -m pytest test_x_ingestion.py test_topics.py --timeout 5
+cd digest && .venv/bin/python -m pytest test_x_ingestion.py test_topics.py test_events_digest.py --timeout 5
 cd recommender && .venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
 ```
 

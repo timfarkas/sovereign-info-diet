@@ -119,3 +119,27 @@ RSS_EXCLUDE_TITLE_PREFIXES = ("AI Digest", "Geopolitics, Markets",
 # to 3. It is a fixed per-subreddit quota now, and POSTS_TO_ANALYZE stays as the
 # AI topic's own budget so nothing else that reads it changes meaning.
 POSTS_PER_SUBREDDIT = POSTS_TO_ANALYZE // len(SUBREDDITS)
+
+
+# --- events digest (events_digest.py) ----------------------------------------
+# A weekly "what's on in <city>" mail. Unlike the topic digests it reads no
+# scraped corpus: the model researches each category itself with web search,
+# then scores every event it found against the interests.
+#
+# WHICH city and WHICH interests live in events_config.json at the repo root,
+# not here: they say where the reader is and what he cares about, and this is a
+# public repo. That file is gitignored; copy events_config.example.json to start
+# one. A run with no such file fails loudly rather than researching the example.
+from pathlib import Path as _Path
+EVENTS_CONFIG_PATH = _Path(__file__).resolve().parent.parent / "events_config.json"
+EVENTS_WEEKDAY = 6               # 0=Mon .. 6=Sun, in the config's timezone
+EVENTS_WINDOW_DAYS = 7           # events starting from today through today+6
+EVENTS_TOP_PICKS = 8             # at most this many in "top picks"
+EVENTS_MIN_SCORE = 6             # 0-10; below this an event is not mailed at all.
+                                 # At 4 the first run (2026-10-31) mailed 46 of 49.
+EVENTS_TOP_SCORE = 7             # at or above this it is eligible for top picks
+EVENTS_COST_CEILING_USD = 2.50   # warns past this. First run: $1.89, 112 searches
+# OpenAI bills each web_search tool call on top of tokens. $10 per 1k calls is
+# the published price for reasoning models as of 2026-10; re-check if the
+# printed cost and the billing page disagree.
+WEB_SEARCH_PRICE_PER_CALL = 0.01

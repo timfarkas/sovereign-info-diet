@@ -1,0 +1,17 @@
+{
+  "city": "Amsterdam",
+  "timezone": "Europe/Amsterdam",
+  "categories": [
+    {
+      "name": "Open source & self-hosting",
+      "interests": "open source software, self-hosting, the fediverse",
+      "hints": "hackerspaces, FOSS meetups, Linux and self-hosting user groups"
+    },
+    {
+      "name": "Climate tech",
+      "interests": "climate tech, energy systems",
+      "hints": "climate-tech founder meetups, university energy institutes"
+    }
+  ],
+  "_comment": "Copy to events_config.json (gitignored) and edit. One web-searched research call per category. 'interests' is what every event is scored against; 'hints' are places worth checking in this city, not a whitelist. timezone is an IANA name; it decides what 'Sunday' and 'this week' mean."
+}

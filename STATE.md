@@ -90,6 +90,18 @@ Known and deliberate:
 - **WHO's Disease Outbreak News feed is 404 at every documented URL.** WHO reaches
   the pandemic topic by keyword only.
 
+## The events digest
+
+Weekly, Sunday, from the 01:00 UTC pipeline (02:00-03:00 in central Europe, Saturday evening in
+the US), before the 02:00 shortlist run, so it can reach that night's shortlist.
+It does its own web research: 6 categories, one web-searching call each, run 3 at a
+time. First run, 2026-10-31: 3m35s, 70 MB peak, 112 searches, 51 events found and
+49 kept, **$1.89** (about $1.12 of that is search fees, assuming $10 per 1k calls).
+That is about $8 a month, roughly the cost of the AI digest. 46 of 49 linked pages
+returned HTTP 200; the other 3 were rate limits or timeouts, not dead links. The raw
+events and scores for every run are kept in
+`extracts/summaries/events_<date>.json`. There is no status page for it yet.
+
 ## The box
 
 2 vCPU (Xeon Skylake), 3.7 GB RAM, ~16 GB free disk, 2 GB swap. Measured costs:
