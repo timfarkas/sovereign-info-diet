@@ -136,7 +136,9 @@ to `EMAIL_TO` plus every address in `EMAIL_TO_EXTRA` (.env).
 this week" mail with no scraped corpus behind it. It runs as the last leg of
 `run_pipeline.sh` every night and decides for itself whether it is due: it is due
 when nothing has been sent since the most recent Sunday in the city's timezone, so
-a failed Sunday is retried on Monday rather than skipped.
+a failed Sunday is retried on Monday rather than skipped. Sunday closes a week, so
+Sunday's digest covers the coming Monday to Sunday; a catch-up later in the
+week covers what is left of that same week.
 
 1. **research** -- one `gpt-6-sol` call per category in `events_config.json`, using
    OpenAI's `web_search` tool and returning structured events (title, start, venue,

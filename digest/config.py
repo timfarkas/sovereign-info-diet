@@ -132,8 +132,8 @@ POSTS_PER_SUBREDDIT = POSTS_TO_ANALYZE // len(SUBREDDITS)
 # one. A run with no such file fails loudly rather than researching the example.
 from pathlib import Path as _Path
 EVENTS_CONFIG_PATH = _Path(__file__).resolve().parent.parent / "events_config.json"
-EVENTS_WEEKDAY = 6               # 0=Mon .. 6=Sun, in the config's timezone
-EVENTS_WINDOW_DAYS = 7           # events starting from today through today+6
+EVENTS_WEEKDAY = 6               # 0=Mon .. 6=Sun, in the config's timezone. The send
+                                 # day; the digest covers the seven days after it.
 EVENTS_TOP_PICKS = 8             # at most this many in "top picks"
 EVENTS_MIN_SCORE = 6             # 0-10; below this an event is not mailed at all.
                                  # At 4 the first run (2026-10-31) mailed 46 of 49.
