@@ -108,17 +108,29 @@ def today_local(now: datetime) -> date:
     return now.astimezone(ZoneInfo(SETTINGS["timezone"])).date()
 
 
+def send_day(today: date) -> date:
+    """The most recent EVENTS_WEEKDAY on or before today: the day this week's
+    digest is due."""
+    return today - timedelta(days=(today.weekday() - config.EVENTS_WEEKDAY) % 7)
+
+
 def window(today: date) -> Tuple[date, date]:
-    """Inclusive date range the digest covers: today through today+N-1."""
-    return today, today + timedelta(days=config.EVENTS_WINDOW_DAYS - 1)
+    """Inclusive dates covered: the seven days after the send day (Tim, KYRO-38:
+    Sunday closes a week, so Sunday's digest is for the coming Mon-Sun).
+
+    A catch-up run later in that week covers the same week minus what is already
+    over, so a Tuesday retry never lists Monday's events.
+    """
+    send = send_day(today)
+    return max(send + timedelta(days=1), today), send + timedelta(days=7)
 
 
 def due(last_success: Optional[str], today: date) -> Tuple[bool, str]:
-    """Due iff nothing was sent since the most recent EVENTS_WEEKDAY."""
-    anchor = today - timedelta(days=(today.weekday() - config.EVENTS_WEEKDAY) % 7)
-    if last_success and date.fromisoformat(last_success) >= anchor:
-        return False, f"already sent {last_success} (this week starts {anchor})"
-    return True, f"no send since {anchor} (last: {last_success or 'never'})"
+    """Due iff nothing was sent since the most recent send day."""
+    send = send_day(today)
+    if last_success and date.fromisoformat(last_success) >= send:
+        return False, f"already sent {last_success} (this week's send day is {send})"
+    return True, f"no send since {send} (last: {last_success or 'never'})"
 
 
 def load_state() -> Dict:

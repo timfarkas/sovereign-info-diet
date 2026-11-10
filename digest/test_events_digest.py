@@ -46,8 +46,20 @@ def test_not_due_midweek_once_this_weeks_digest_went_out():
     assert ev.due(None, SAT)[0]          # never sent: the first run goes out
 
 
-def test_window_is_seven_days_inclusive():
-    assert ev.window(SUN) == (SUN, date(2026, 11, 7))
+def test_sundays_digest_covers_the_coming_monday_to_sunday():
+    assert ev.window(SUN) == (MON, date(2026, 11, 8))
+
+
+def test_a_monday_catch_up_covers_the_same_week():
+    assert ev.window(MON) == (MON, date(2026, 11, 8))
+
+
+def test_a_later_catch_up_drops_the_days_already_over():
+    assert ev.window(date(2026, 11, 4)) == (date(2026, 11, 4), date(2026, 11, 8))
+
+
+def test_saturday_still_belongs_to_the_week_sent_the_sunday_before():
+    assert ev.window(SAT) == (SAT, date(2026, 11, 1))
 
 
 # -- cleaning -------------------------------------------------------------------
