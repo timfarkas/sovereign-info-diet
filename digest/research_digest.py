@@ -43,6 +43,7 @@ from llm_summarizer import BLOCKED_HREF, strip_blocked_links
 from x_scraper import TwitterIOClient, XFeedDown, XScraper
 
 STATE_PATH = "extracts/research_state.json"
+PREVIOUS_CHARS = 20000  # whole previous digest; a truncated memory would re-report old items as new
 OUT_DIR = Path("extracts/summaries")
 REQUIRED = {"slug", "name", "question", "every_n_days", "keywords"}
 OPTIONAL = {"x_hints", "watch_urls", "expires", "notes"}
@@ -118,7 +119,7 @@ class XSearch:
     """The model's `x_search` tool. Counts calls, caps them, remembers every
     outbound link it returned (the link checker's allow-list)."""
 
-    def __init__(self, client: TwitterIOClient, since: date, max_calls: int):
+    def __init__(self, client: TwitterIOClient, since: Optional[date], max_calls: int):
         self.client, self.since, self.max_calls = client, since, max_calls
         self.calls = 0
         self.tweets_seen = 0
@@ -129,7 +130,7 @@ class XSearch:
             return json.dumps({"error": f"x_search budget of {self.max_calls} calls "
                                         f"is used up; write the digest now"})
         self.calls += 1
-        if "since:" not in query:
+        if self.since and "since:" not in query:
             query += f" since:{self.since.isoformat()}"
         try:
             d = self.client.get("/twitter/tweet/advanced_search",
@@ -208,12 +209,18 @@ def inbox_block(t: topics.Topic, tweets: List[Dict], feed_items: List[Dict]) -> 
 
 
 def previous_block(path: Optional[Path]) -> str:
-    if not path or not path.exists():
-        return "This is the first digest on this topic, so cover the recent past broadly.\n"
+    if not path:
+        return ("FIRST DIGEST on this topic: there is no earlier report and the reader has "
+                "seen nothing. Report everything you can establish about the topic, "
+                "however old -- background, history, people, programmes, outputs, current "
+                "state -- not just recent news. Recent items go first, then the rest.\n")
     text = re.sub(r"<[^>]+>", " ", path.read_text(encoding="utf-8"))
-    text = re.sub(r"\s+", " ", text)[:6000]
-    return ("The previous digest said the following (text only). Do not repeat it; "
-            f"report only what is NEW since:\n<previous>\n{text}\n</previous>\n")
+    text = re.sub(r"\s+", " ", text)[:PREVIOUS_CHARS]
+    return ("The reader has already seen the previous digest below (text only). Mark each "
+            "item you report as <strong>NEW</strong> (not in it) or <strong>UPDATE</strong> "
+            "(a development on something in it, saying what changed). Do not re-report "
+            "items that are unchanged; instead end with a one-line list of what from the "
+            f"previous digest still stands.\n<previous>\n{text}\n</previous>\n")
 
 
 def unlink_unverified(page: str, allowed: set) -> Tuple[str, int]:
@@ -230,12 +237,13 @@ def unlink_unverified(page: str, allowed: set) -> Tuple[str, int]:
     return BLOCKED_HREF.sub(repl, page), n
 
 
-def window_start(state: Dict, t: topics.Topic, today: date) -> date:
-    """Since the last success, else one cadence back."""
+def window_start(state: Dict, t: topics.Topic, today: date,
+                 has_previous: bool) -> Optional[date]:
+    """Since the last success. None = first digest, no date limit at all."""
     last = (state.get(t.key) or {}).get("last_success")
     if last:
         return datetime.fromisoformat(last).date()
-    return today - timedelta(days=t.every_n_days)
+    return today - timedelta(days=t.every_n_days) if has_previous else None
 
 
 def render(e: Dict, today: date, body: str, footer: str, banner: str) -> str:
@@ -252,15 +260,16 @@ def render(e: Dict, today: date, body: str, footer: str, banner: str) -> str:
 def run_one(e: Dict, state: Dict, client, x_client, shared: Dict, *, mail: bool,
             today: date) -> Dict:
     t = as_topic(e)
-    since = window_start(state, t, today)
+    prior = sorted(OUT_DIR.glob(f"summary_research-{e['slug']}_*.html"))
+    since = window_start(state, t, today, bool(prior))
     x_hits = t.select_tweets(corpus_for(shared["x_buckets"], t.lookback_hours,
                                         tweet_key)[0])
     feed_hits = [i for i in shared["feed_items"]
                  if t.matches(i.get("title"), i.get("summary"))]
-    prior = sorted(OUT_DIR.glob(f"summary_research-{e['slug']}_*.html"))
     prompt = prompts.RESEARCH_DIGEST.format(
         name=e["name"], question=e["question"], today=today.isoformat(),
-        since=since.isoformat(), window_days=(today - since).days or 1,
+        since=since.isoformat() if since else "the beginning",
+        window_days=((today - since).days or 1) if since else "all",
         every_n_days=e["every_n_days"],
         x_hints="; ".join(e.get("x_hints") or ["(none -- derive them yourself)"]),
         watch_urls="; ".join(e.get("watch_urls") or ["(none -- find them yourself)"]),

@@ -501,7 +501,7 @@ RESEARCH_SYSTEM = (
 
 RESEARCH_DIGEST = """TOPIC: {name}
 THE READER WANTS TO KNOW: {question}
-TODAY: {today}. This digest covers roughly the last {window_days} days (since {since}); it runs every {every_n_days} days.
+TODAY: {today}. This digest covers: since {since} ({window_days} days); it runs every {every_n_days} days. (If this is a FIRST digest, see below: no date limit.)
 
 How to research -- do it properly, this is the whole value of the digest:
 - Use `web_search` for the topic's official sites, announcements, news, papers, preprints, job and event pages, blog posts and press. Run many searches with different phrasings and check the primary pages, not just aggregators.
@@ -514,7 +514,7 @@ Write the digest as an HTML fragment:
 - `<h2>` per theme (e.g. announcements, research/papers, people & hiring, discussion on X). Skip themes with nothing.
 - Lead with the single most important new thing. Each item: what happened, when, and why it matters to the reader, in 1-3 sentences, with the source as a link.
 - Separate clearly what is CONFIRMED (a primary source says so) from what is only RUMOUR/OPINION on X. Attribute X claims to who said them ("@handle said ...") but do not link to x.com.
-- Only things new since {since}. If something older is needed for context, say it is background in half a sentence.
+- Follow the first-digest / previous-digest instructions below on what counts as new. Otherwise: only things new since {since}; older context is background in half a sentence.
 - If you found nothing new, say so in two sentences and list what you checked. An empty digest honestly labelled is correct; a padded one is not.
 - End with `<h3>Checked but quiet</h3>` listing sources you looked at that had nothing new (one line).
 

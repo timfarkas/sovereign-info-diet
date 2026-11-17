@@ -117,3 +117,19 @@ def test_agent_loop_that_never_stops_is_cut_off_and_flagged(monkeypatch):
     monkeypatch.setattr(config, "RESEARCH_MAX_TOOL_ROUNDS", 3)
     res = rd.run_agent(None, "p", rd.XSearch(FakeX(), date(2026, 11, 3), 99))
     assert res["truncated"] and res["html"] == "<p>forced</p>"
+
+
+def test_first_digest_has_no_date_limit_and_asks_for_everything():
+    t = rd.as_topic(ENTRY)
+    assert rd.window_start({}, t, date(2026, 11, 17), has_previous=False) is None
+    assert "FIRST DIGEST" in rd.previous_block(None)
+    x = rd.XSearch(FakeX(), None, max_calls=1)
+    x("mindspan", "Latest")
+    assert "since:" not in x.client.queries[0]
+
+
+def test_later_digest_sees_whole_previous_report_and_marks_new_vs_update(tmp_path):
+    prev = tmp_path / "p.html"
+    prev.write_text("<p>" + "old item. " * 1000 + "LASTWORD</p>")  # >6000 chars
+    block = rd.previous_block(prev)
+    assert "LASTWORD" in block and "NEW" in block and "UPDATE" in block
