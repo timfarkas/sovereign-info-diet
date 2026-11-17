@@ -890,3 +890,15 @@ def test_privileged_digests_never_take_a_regular_slot(store):
     stock(store, [digest("a1", "AI Digest", 1)] + [doc(f"f{i}") for i in range(20)])
     chosen = shortlist_job.pick(store, None, taste(), now=NOW, skip={"a1"})
     assert "a1" not in {d["id"] for d, _, _ in chosen}
+
+
+def test_an_expired_research_series_is_no_longer_privileged(store, tmp_path, monkeypatch):
+    import json
+    from datetime import date
+    path = tmp_path / "research_topics.json"
+    path.write_text(json.dumps([{"name": "Foo", "expires": "2026-10-05"},
+                                {"name": "Bar", "expires": None}]))
+    monkeypatch.setattr(config, "RESEARCH_TOPICS_PATH", path)
+    stock(store, [digest("f1", "Foo Digest", 1), digest("b1", "Bar Digest", 1)])
+    assert {d["id"] for d in shortlist_job.privileged_digests(store, date(2026, 10, 5))} == {"f1", "b1"}
+    assert {d["id"] for d in shortlist_job.privileged_digests(store, date(2026, 10, 6))} == {"b1"}

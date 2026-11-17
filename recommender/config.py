@@ -52,6 +52,10 @@ RATE_BAD_TAG = "rate:bad"
 DIGEST_AUTHOR = "Meta Minsky"
 DIGEST_CATEGORY = "email"
 DIGEST_SLOT = "digest"
+# Research digests (digest/research_topics.json) may carry an `expires` date;
+# past it the series is no longer held on the shortlist.
+from pathlib import Path as _Path
+RESEARCH_TOPICS_PATH = _Path(__file__).resolve().parent.parent / "research_topics.json"
 
 # Shape of a cycle: two pools, each with its own unranked random picks.
 #   feed  -- 9 slots from the fresh firehose, 3 of them random
