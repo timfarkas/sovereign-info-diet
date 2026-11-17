@@ -140,3 +140,47 @@ def test_markdown_links_become_anchors_so_they_get_link_checked():
     assert '<a href="https://a.org/p?q=1">a.org</a>' in page
     out, n = rd.unlink_unverified(page, set())
     assert n == 1 and "https://a.org" not in out
+
+
+def test_mailed_run_feeds_notes_and_board_into_the_next_run(monkeypatch, tmp_path):
+    import send_notification
+    import state_notes
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(rd, "OUT_DIR", tmp_path / "out")
+    monkeypatch.setattr(send_notification, "send_email", lambda *a, **k: True)
+    monkeypatch.setattr(send_notification, "recipients_for", lambda full: ["r"])
+    prompts_seen = []
+    digest = ("<h2>Hiring</h2><p>" + "Three connectomics jobs opened. " * 10 + "</p>"
+              "<!-- STATE-NOTES-START -->searched lab jobs page; chase the "
+              "preprint<!-- STATE-NOTES-END -->"
+              "<!-- LONG-RUNNING-START -->- founded 2026 (first reported 2026-11-17)"
+              "<!-- LONG-RUNNING-END -->")
+
+    def agent(client, prompt, xs):
+        prompts_seen.append(prompt)
+        return {"html": digest, "cost": 0.1, "web_searches": 1, "links": set(),
+                "truncated": False, "rounds": 1}
+    monkeypatch.setattr(rd, "run_agent", agent)
+    shared = {"x_buckets": [], "feed_items": []}
+    monkeypatch.setattr(rd, "corpus_for", lambda *a: ([], None))
+
+    r = rd.run_one(ENTRY, {}, None, None, shared, mail=True, today=date(2026, 11, 17))
+    assert r["mailed"] and "STATE-NOTES" not in open(r["path"]).read()
+    assert "no notes from prior runs" in prompts_seen[0]
+
+    rd.run_one(ENTRY, {}, None, None, shared, mail=True, today=date(2026, 12, 1))
+    assert "chase the preprint" in prompts_seen[1]
+    assert "founded 2026 (first reported 2026-11-17)" in prompts_seen[1]
+
+
+def test_unmailed_run_does_not_write_memory(monkeypatch, tmp_path):
+    import state_notes
+    monkeypatch.setattr(state_notes, "NOTES_DIR", tmp_path / "notes")
+    monkeypatch.setattr(rd, "OUT_DIR", tmp_path / "out")
+    monkeypatch.setattr(rd, "corpus_for", lambda *a: ([], None))
+    monkeypatch.setattr(rd, "run_agent", lambda c, p, xs: {
+        "html": "<p>" + "x " * 200 + "</p><!-- STATE-NOTES-START -->n<!-- STATE-NOTES-END -->",
+        "cost": 0, "web_searches": 0, "links": set(), "truncated": False, "rounds": 1})
+    rd.run_one(ENTRY, {}, None, None, {"x_buckets": [], "feed_items": []},
+               mail=False, today=date(2026, 11, 17))
+    assert not (tmp_path / "notes").exists()

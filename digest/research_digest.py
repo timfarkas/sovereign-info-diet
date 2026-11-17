@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 import config
 import prompts
+import state_notes
 import topics
 from digest_run import corpus_for, load_buckets, tweet_key
 from events_digest import _client, _respond, cost_of, clean_url
@@ -231,6 +232,13 @@ def md_links_to_html(page: str) -> str:
     return MD_LINK.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', page)
 
 
+def memory_block(key: str) -> str:
+    return prompts.RESEARCH_MEMORY.format(
+        instructions=prompts.NOTES_INSTRUCTIONS,
+        sources=prompts.NOTES_SOURCES.format(prior_notes=state_notes.load(key),
+                                             longrunning=state_notes.load_longrunning(key)))
+
+
 def unlink_unverified(page: str, allowed: set) -> Tuple[str, int]:
     """Keep an <a> only if its URL came back from a tool this run. Returns the
     page and how many links were unlinked."""
@@ -283,11 +291,13 @@ def run_one(e: Dict, state: Dict, client, x_client, shared: Dict, *, mail: bool,
         watch_urls="; ".join(e.get("watch_urls") or ["(none -- find them yourself)"]),
         extra=(e.get("notes") or "") + "\n",
         inbox=inbox_block(t, x_hits, feed_hits),
-        previous=previous_block(prior[-1] if prior else None))
+        previous=previous_block(prior[-1] if prior else None),
+        memory=memory_block(t.key))
     xs = XSearch(x_client, since, config.RESEARCH_MAX_X_SEARCHES)
     res = run_agent(client, prompt, xs)
 
-    body = strip_blocked_links(md_links_to_html(res["html"].strip()))
+    raw, notes_entry, board = state_notes.extract(res["html"])
+    body = strip_blocked_links(md_links_to_html(raw))
     body, unlinked = unlink_unverified(body, res["links"])
     if len(re.sub(r"<[^>]+>", "", body).strip()) < 200:
         return {"key": e["slug"], "ok": False, "mailed": False, "cost": res["cost"],
@@ -317,6 +327,13 @@ def run_one(e: Dict, state: Dict, client, x_client, shared: Dict, *, mail: bool,
         result["mailed"] = bool(send_email(subject_for(e, today), page,
                                            to_email=recipients_for(full=False)))
         result["ok"] = result["mailed"]
+    if result["mailed"]:
+        # Same rule as digest_run: only a digest the reader actually got earns a
+        # place in memory.
+        if notes_entry:
+            state_notes.append(t.key, notes_entry, datetime.now(timezone.utc))
+        if board is not None:
+            state_notes.save_longrunning(t.key, board)
     return result
 
 

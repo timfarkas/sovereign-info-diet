@@ -181,8 +181,14 @@ adding an entry:
 The bulk is proactive research: the model gets OpenAI `web_search` plus an
 `x_search` tool (twitterapi.io advanced search, capped by
 `RESEARCH_MAX_X_SEARCHES`) and loops until it writes the digest
-(`RESEARCH_MAX_TOOL_ROUNDS`, flagged in the mail if hit). The previous digest is
-passed in so only new things are reported. Every `<a>` whose URL no tool returned
+(`RESEARCH_MAX_TOOL_ROUNDS`, flagged in the mail if hit). Memory is the same
+`state_notes.py` the topic digests use, keyed `research-<slug>`: rolling notes
+from the last `NOTES_KEPT` runs (what was covered, which searches paid off, leads
+to chase) plus a long-running board, rewritten each run, that is the cumulative
+record of everything established about the topic. Both are written only after a
+real send. The full previous digest is passed in as well, and items are tagged
+NEW/UPDATE against it. With no previous digest, the first run has no date limit
+and reports everything it can establish. Every `<a>` whose URL no tool returned
 is unlinked in code. Subject `<name> Digest - <date>` means the recommender treats
 it like every other digest: auto `rate:good`, shortlisted, kept until a newer one
 of the series arrives or it is archived, and dropped from the shortlist once

@@ -499,6 +499,15 @@ RESEARCH_SYSTEM = (
     "pad. Output is an HTML fragment (no <html>/<body>), never markdown."
 )
 
+# Research digests share the daily digests' memory (state_notes.py): rolling notes
+# from the last few runs plus a long-running board, with research-specific framing.
+RESEARCH_MEMORY = """{instructions}
+For THIS research digest, the two memories have specific jobs:
+- Scratch notes: besides what you covered, record what you were LOOKING for -- the searches and sources that paid off, the ones that were dead ends, and concrete leads to chase next run (a paper said to be in review, a job posting to re-check, a person who might announce something).
+- Long-running board: the cumulative record of what has been established about this topic across ALL digests so far -- people and roles, programmes, outputs, partnerships, open questions -- each with the date it was first reported. It is how a later digest knows what the reader was told months ago, after the old notes have rolled off.
+
+{sources}"""
+
 RESEARCH_DIGEST = """TOPIC: {name}
 THE READER WANTS TO KNOW: {question}
 TODAY: {today}. This digest covers: since {since} ({window_days} days); it runs every {every_n_days} days. (If this is a FIRST digest, see below: no date limit.)
@@ -510,6 +519,7 @@ How to research -- do it properly, this is the whole value of the digest:
 {extra}
 {inbox}
 {previous}
+{memory}
 Write the digest as an HTML fragment:
 - `<h2>` per theme (e.g. announcements, research/papers, people & hiring, discussion on X). Skip themes with nothing.
 - Lead with the single most important new thing. Each item: what happened, when, and why it matters to the reader, in 1-3 sentences, with the source as a link.
