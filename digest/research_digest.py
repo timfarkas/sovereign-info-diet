@@ -146,6 +146,11 @@ class XSearch:
                            for t in tweets], ensure_ascii=False)
 
 
+def _url(obj) -> str:
+    """A source/annotation's url, whether the SDK gave an object or a plain dict."""
+    return obj["url"] if isinstance(obj, dict) else obj.url
+
+
 def run_agent(client, prompt: str, xsearch: XSearch) -> Dict:
     """Let the model call web_search / x_search until it writes the digest."""
     history = [{"role": "system", "content": prompts.RESEARCH_SYSTEM},
@@ -160,12 +165,12 @@ def run_agent(client, prompt: str, xsearch: XSearch) -> Dict:
         for item in r.output:
             if item.type == "web_search_call":
                 src = getattr(getattr(item, "action", None), "sources", None) or []
-                cited.update(clean_url(x.url) for x in src)
+                cited.update(clean_url(_url(x)) for x in src)
             elif item.type == "message":
                 for part in item.content:
                     for a in getattr(part, "annotations", None) or []:
                         if a.type == "url_citation":
-                            cited.add(clean_url(a.url))
+                            cited.add(clean_url(_url(a)))
         calls = [i for i in r.output if i.type == "function_call"]
         if not calls:
             return {"html": r.output_text, "cost": dollars, "web_searches": searches,

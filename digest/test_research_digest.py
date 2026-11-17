@@ -99,12 +99,14 @@ def test_agent_loop_runs_tool_then_returns_digest(monkeypatch):
               arguments=json.dumps({"query": "foo", "sort": "Top"}))
     msg = NS(type="message", content=[NS(annotations=[NS(type="url_citation",
                                                           url="https://a.org/p")])])
-    replies = iter([fake_response([call]), fake_response([msg], "<p>done</p>")])
+    src = NS(type="web_search_call", action=NS(sources=[{"url": "https://b.org/q"}]))
+    replies = iter([fake_response([call]), fake_response([src, msg], "<p>done</p>")])
     monkeypatch.setattr(rd, "_respond", lambda client, **kw: next(replies))
     x = rd.XSearch(FakeX(), date(2026, 11, 3), 5)
     res = rd.run_agent(None, "prompt", x)
     assert res["html"] == "<p>done</p>" and res["rounds"] == 2 and not res["truncated"]
     assert x.calls == 1 and rd.clean_url("https://a.org/p") in res["links"]
+    assert rd.clean_url("https://b.org/q") in res["links"]      # dict-shaped source
 
 
 def test_agent_loop_that_never_stops_is_cut_off_and_flagged(monkeypatch):
