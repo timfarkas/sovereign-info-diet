@@ -223,6 +223,14 @@ def previous_block(path: Optional[Path]) -> str:
             f"previous digest still stands.\n<previous>\n{text}\n</previous>\n")
 
 
+MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+
+
+def md_links_to_html(page: str) -> str:
+    """The model sometimes slips markdown links into the HTML; make them real <a>."""
+    return MD_LINK.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', page)
+
+
 def unlink_unverified(page: str, allowed: set) -> Tuple[str, int]:
     """Keep an <a> only if its URL came back from a tool this run. Returns the
     page and how many links were unlinked."""
@@ -279,7 +287,7 @@ def run_one(e: Dict, state: Dict, client, x_client, shared: Dict, *, mail: bool,
     xs = XSearch(x_client, since, config.RESEARCH_MAX_X_SEARCHES)
     res = run_agent(client, prompt, xs)
 
-    body = strip_blocked_links(res["html"].strip())
+    body = strip_blocked_links(md_links_to_html(res["html"].strip()))
     body, unlinked = unlink_unverified(body, res["links"])
     if len(re.sub(r"<[^>]+>", "", body).strip()) < 200:
         return {"key": e["slug"], "ok": False, "mailed": False, "cost": res["cost"],

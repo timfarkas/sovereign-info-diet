@@ -133,3 +133,10 @@ def test_later_digest_sees_whole_previous_report_and_marks_new_vs_update(tmp_pat
     prev.write_text("<p>" + "old item. " * 1000 + "LASTWORD</p>")  # >6000 chars
     block = rd.previous_block(prev)
     assert "LASTWORD" in block and "NEW" in block and "UPDATE" in block
+
+
+def test_markdown_links_become_anchors_so_they_get_link_checked():
+    page = rd.md_links_to_html("<p>x ([a.org](https://a.org/p?q=1))</p>")
+    assert '<a href="https://a.org/p?q=1">a.org</a>' in page
+    out, n = rd.unlink_unverified(page, set())
+    assert n == 1 and "https://a.org" not in out
