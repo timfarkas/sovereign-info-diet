@@ -163,6 +163,36 @@ as a digest series. It shares `--dry-run`/`--no-mail`/`--force` with
 python events_digest.py --dry-run --force    # research + score, save the page, mail nothing
 ```
 
+#### research digests
+
+`digest/research_digest.py` is the sibling of the events digest for *questions*:
+one mail per entry in `research_topics.json` (repo root, **gitignored** -- the
+questions are personal; copy `research_topics.example.json`). Adding a digest is
+adding an entry:
+
+| field | meaning |
+|---|---|
+| `slug`, `name`, `question` | id, mail-subject name, and what the reader wants to know |
+| `every_n_days` | cadence, from the last **success** (same `topics.due` as the topic digests) |
+| `keywords` | NARROW keyword filter over the scraped X/feed dumps; hits are a head start in the prompt, not the bulk |
+| `x_hints`, `watch_urls`, `notes` | optional starting points for the model's own searching |
+| `expires` | optional ISO date; after it the digest stops running *and* stops being held on the shortlist |
+
+The bulk is proactive research: the model gets OpenAI `web_search` plus an
+`x_search` tool (twitterapi.io advanced search, capped by
+`RESEARCH_MAX_X_SEARCHES`) and loops until it writes the digest
+(`RESEARCH_MAX_TOOL_ROUNDS`, flagged in the mail if hit). The previous digest is
+passed in so only new things are reported. Every `<a>` whose URL no tool returned
+is unlinked in code. Subject `<name> Digest - <date>` means the recommender treats
+it like every other digest: auto `rate:good`, shortlisted, kept until a newer one
+of the series arrives or it is archived, and dropped from the shortlist once
+`expires` passes (`shortlist_job.expired_series`). Mails `EMAIL_TO` only.
+
+```bash
+python research_digest.py --list
+python research_digest.py --only mindspan --dry-run --force   # research, save the page, mail nothing
+```
+
 #### subscribed feeds
 
 Two independent paths, not a primary and a fallback:
@@ -360,7 +390,7 @@ chart is backed by a `<details>` table.
 ### tests
 
 ```bash
-cd digest && .venv/bin/python -m pytest test_x_ingestion.py test_topics.py test_events_digest.py --timeout 5
+cd digest && .venv/bin/python -m pytest test_x_ingestion.py test_topics.py test_events_digest.py test_research_digest.py --timeout 5
 cd recommender && .venv-rec/bin/python -m pytest test_shortlist.py test_stats.py --timeout 5
 ```
 

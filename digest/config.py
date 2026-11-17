@@ -143,3 +143,12 @@ EVENTS_COST_CEILING_USD = 2.50   # warns past this. First run: $1.89, 112 search
 # the published price for reasoning models as of 2026-10; re-check if the
 # printed cost and the billing page disagree.
 WEB_SEARCH_PRICE_PER_CALL = 0.01
+
+# Research digests: one per entry in research_topics.json at the repo root. Like
+# the events digest they RESEARCH (web search + X search, driven by the model)
+# instead of summarizing a scraped corpus. The questions people ask live in that
+# gitignored file; copy research_topics.example.json to start one.
+RESEARCH_TOPICS_PATH = _Path(__file__).resolve().parent.parent / "research_topics.json"
+RESEARCH_MAX_TOOL_ROUNDS = 20    # model turns per digest; a run that hits it is flagged
+RESEARCH_MAX_X_SEARCHES = 25     # x_search calls per digest (~20 tweets, ~$0.003 each)
+RESEARCH_COST_CEILING_USD = 1.50 # warns past this

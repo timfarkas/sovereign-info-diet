@@ -10,12 +10,13 @@ whole decision without writing anything.
 """
 
 import argparse
+import json
 import os
 import random
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -317,18 +318,36 @@ def is_digest(doc):
             and doc.get("author") == config.DIGEST_AUTHOR)
 
 
-def privileged_digests(store):
+def expired_series(today=None):
+    """Titles of research-digest series whose `expires` date has passed.
+
+    Read from the same research_topics.json that digest/research_digest.py runs
+    from, so the digest stops AND stops being held on the shortlist on one date.
+    No file means no expiries; a malformed file is an error, not silence.
+    """
+    path = config.RESEARCH_TOPICS_PATH
+    if not path.exists():
+        return set()
+    today = today or datetime.now(timezone.utc).date()
+    return {f"{e['name']} Digest" for e in json.loads(path.read_text())
+            if e.get("expires") and today > date.fromisoformat(e["expires"])}
+
+
+def privileged_digests(store, today=None):
     """The newest digest of each series, unless it is already archived.
 
     A series is the title without its trailing date ("AI Digest - 2026-10-08" ->
     "AI Digest"). A digest stays privileged until Tim archives it or a newer one
-    of its series arrives, whichever comes first.
+    of its series arrives, whichever comes first -- or its series expires.
     """
+    gone = expired_series(today)
     newest = {}
     for doc in store.documents():
         if not is_digest(doc):
             continue
         series = re.sub(r"\s*-\s*\d{4}-\d{2}-\d{2}\s*$", "", doc.get("title") or "")
+        if series in gone:
+            continue
         if series not in newest or doc["saved_at"] > newest[series]["saved_at"]:
             newest[series] = doc
     return [d for d in newest.values() if d["location"] != "archive"]

@@ -30,5 +30,8 @@ rc=$?
 # one-line skip. Its failure is logged but does not change the night's rc --
 # that stays the topic digests' verdict.
 $PY events_digest.py "$@" || echo "[pipeline] events_digest.py exited $? -- no events digest this run"
+# Research digests (research_topics.json): each decides for itself whether it is
+# due, per its own every_n_days. Same failure policy as events.
+$PY research_digest.py "$@" || echo "[pipeline] research_digest.py exited $? -- a research digest failed or is missing"
 echo "=== $(date -u +%FT%TZ) pipeline end (rc=$rc) ==="
 exit $rc
