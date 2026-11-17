@@ -1,0 +1,12 @@
+[
+  {
+    "slug": "mindspan",
+    "name": "Mindspan Institute",
+    "question": "What is the Mindspan Institute (Ed Boyden, Konrad Kording) up to? New developments on its website, announcements, papers, hiring, and discussion on X.",
+    "every_n_days": 14,
+    "keywords": ["mindspan", "mind span", "boyden", "kording"],
+    "x_hints": ["mindspan", "\"Mindspan Institute\"", "from:eboyden3", "Boyden expansion microscopy", "Kording"],
+    "watch_urls": ["https://www.mindspan.org/"],
+    "expires": null
+  }
+]
