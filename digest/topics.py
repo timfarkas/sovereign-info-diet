@@ -240,7 +240,7 @@ AI_FEEDS = (
 
 def _ai_topic() -> Topic:
     from config import (LINK_FETCH_MAX_PAGES, POSTS_TO_ANALYZE, SUBREDDITS,
-                        SUMMARY_COST_CEILING_USD, TIME_HORIZON_DAYS)
+                        SUMMARY_COST_CEILING_USD)
     from prompts import AI
     return Topic(
         key="ai",
@@ -253,9 +253,11 @@ def _ai_topic() -> Topic:
                 "claim as a claim."),
         priorities_blurb="world-changing capability, policy and safety "
                          "developments, x-risk",
-        every_n_days=1,
-        window_days=TIME_HORIZON_DAYS,
-        lookback_hours=20,
+        # every 3 days since 2026-11-18 (Tim, KYRO-49), like the other topics:
+        # it reads the last three nights' dumps instead of only tonight's
+        every_n_days=3,
+        window_days=3,
+        lookback_hours=76,          # 3 days plus cron slack
         subreddits=tuple(SUBREDDITS),
         posts_per_subreddit=POSTS_TO_ANALYZE // len(SUBREDDITS),
         x_all=True,          # the AI digest reads every tweet, as it always has

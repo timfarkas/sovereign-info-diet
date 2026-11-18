@@ -332,6 +332,23 @@ def test_mostly_empty_batches_flag_the_feed_as_suspect(tmp_path):
     assert any("zero tweets" in n for n in health["notes"])
 
 
+def test_same_day_rerun_retries_batches_that_came_back_empty(tmp_path):
+    """Provider returning 200-with-nothing (2026-11-18) must not be cached as a
+    finished batch -- otherwise a re-run replays the outage."""
+    s = scraper_with(tmp_path, [
+        accounts_payload(["a0", "a1"]),
+        {"tweets": [tweet("1")], "has_next_page": False},
+        {"tweets": [], "has_next_page": False},
+    ])
+    s.scrape(seeds=["seed"], max_accounts_per_batch=1, max_query_chars=10_000,
+             run_id="r")
+    s2 = scraper_with(tmp_path, [{"tweets": [tweet("2")], "has_next_page": False}])
+    got = s2.scrape(seeds=["seed"], max_accounts_per_batch=1,
+                    max_query_chars=10_000, run_id="r")
+    assert [t["id"] for t in got] == ["2"]          # batch 0 from cache, batch 1 refetched
+    assert len(s2.client.session.calls) == 1
+
+
 def test_zero_new_tweets_does_not_shadow_the_previous_dump(tmp_path, monkeypatch, capsys):
     """A same-day re-run finds nothing new. It must not write an empty
     x_data_*.json -- that would become the 'newest' file and silently empty the

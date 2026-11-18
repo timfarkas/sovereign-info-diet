@@ -79,9 +79,9 @@ class TestAIDigestUnchanged:
 
     def test_window_and_lookback(self):
         ai = topics.topic("ai")
-        assert ai.window_days == config.TIME_HORIZON_DAYS == 2
-        assert ai.lookback_hours == 20
-        assert ai.every_n_days == 1
+        assert ai.window_days == 3
+        assert ai.lookback_hours == 76
+        assert ai.every_n_days == 3
 
     def test_subreddits_and_quota(self):
         ai = topics.topic("ai")
@@ -121,12 +121,13 @@ class TestAIDigestUnchanged:
         assert ai.page == "ai-digest"          # unchanged -- already this name
         assert ai.subject == "AI Digest"       # the existing mail subject
 
-    def test_is_always_due_with_no_state_at_all(self):
-        is_due, _ = topics.due(topics.topic("ai"), {}, now=NOW)
-        assert is_due
-        # and stays due the same night it already ran
-        state = topics.record_run({}, topics.topic("ai"), ok=True, now=NOW)
-        assert topics.due(topics.topic("ai"), state, now=NOW)[0]
+    def test_runs_every_three_days_not_nightly(self):
+        """Nightly until 2026-11-18; Tim moved it to every 3 days (KYRO-49)."""
+        ai = topics.topic("ai")
+        assert topics.due(ai, {}, now=NOW)[0]
+        state = topics.record_run({}, ai, ok=True, now=NOW)
+        assert not topics.due(ai, state, now=NOW + timedelta(days=1))[0]
+        assert topics.due(ai, state, now=NOW + timedelta(days=3))[0]
 
     def test_is_the_first_topic(self):
         """Ordering is load-bearing: digest_run runs AI first so a later topic
@@ -355,14 +356,11 @@ class TestRedditWindowNarrowing:
         assert len(ai.select_posts([post("deeplearning")], now=NOW)) == 1
 
     def test_a_post_older_than_this_topics_window_is_dropped(self):
-        ai = topics.topic("ai")              # window_days=2
+        ai = topics.topic("ai")              # window_days=3
         sel = ai.select_posts([post("singularity", hours_old=12),
-                               post("singularity", hours_old=70)], now=NOW)
+                               post("singularity", hours_old=80)], now=NOW)
         assert len(sel) == 1
 
-    def test_a_wider_topic_keeps_what_the_ai_topic_drops(self):
-        g = topics.topic("geopolitics")      # window_days=3
-        assert len(g.select_posts([post("geopolitics", hours_old=70)], now=NOW)) == 1
 
     def test_a_post_with_no_timestamp_is_kept(self):
         """Dumps written before created_utc existed were already window-filtered
