@@ -319,8 +319,12 @@ class XScraper:
                 failed += 1
                 print(f"  [x] batch {n} FAILED (kept going): {e}")
                 continue
-            cache.write_text(json.dumps(got, indent=1))
-            if not got:
+            # an empty batch is NOT cached: on 2026-11-18 twitterapi.io answered
+            # 200-with-nothing for ~20 min, and a cached empty would make a
+            # same-day re-run replay the outage instead of recovering from it
+            if got:
+                cache.write_text(json.dumps(got, indent=1))
+            else:
                 empty += 1
             fetched += got
             print(f"  [x] batch {n + 1}/{len(batches)}: {len(got)} tweets "
@@ -330,11 +334,13 @@ class XScraper:
             print(f"  [x] resumed {resumed} batches from {run_dir}")
         live = attempted - resumed - failed
         if live >= 4 and empty > live * 0.6:
-            # the signature of the silent over-long-query failure, not of a
-            # quiet news day. Worth a human look before trusting the digest.
+            # not a quiet news day. Since batches are packed by length, the
+            # usual cause is twitterapi.io returning 200-with-nothing (seen
+            # 2026-11-18); an over-long query is the other suspect.
             self.warnings.append(
                 f"{empty}/{live} freshly-fetched batches returned zero tweets -- "
-                f"suspiciously many; check X search query length/syntax")
+                f"likely a twitterapi.io outage (200 OK, empty results); empty "
+                f"batches are not cached, so re-running today retries them")
 
         seen = self._load_seen()
         fresh, by_id = [], {}
